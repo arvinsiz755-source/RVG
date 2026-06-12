@@ -666,6 +666,7 @@ body{
         <label class="form-label">رمز عبور</label>
         <input class="form-input" type="password" id="password" placeholder="••••••••" autofocus required>
       </div>
+      <a>رمز پیش فرض : 123456</a>
       <button class="btn-login" type="submit" id="login-btn"><i class="ti ti-login-2"></i> ورود</button>
     </form>
 
