@@ -8,8 +8,8 @@ from datetime import datetime
 from urllib.parse import quote
 from collections import deque, defaultdict
 
-from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response, PlainTextResponse, HTMLResponse, JSONResponse
+from fastapi import FastAPI, Request, HTTPException, WebSocket, WebSocketDisconnect, Depends
+from fastapi.responses import Response, PlainTextResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import httpx
@@ -49,6 +49,54 @@ http_client: httpx.AsyncClient | None = None
 # لینک‌های ساخته‌شده توسط کاربران: uuid -> {label, limit_bytes(0=unlimited), used_bytes, created_at, active}
 LINKS: dict = {}
 LINKS_LOCK = asyncio.Lock()
+
+# ───────── Auth State ─────────
+SESSION_COOKIE = "rvg_session"
+SESSION_TTL = 60 * 60 * 24 * 7  # 7 روز
+
+def hash_password(pw: str) -> str:
+    return hashlib.sha256(f"{pw}{CONFIG['secret']}".encode()).hexdigest()
+
+AUTH = {
+    "password_hash": hash_password(os.environ.get("ADMIN_PASSWORD", "123456")),
+}
+
+SESSIONS: dict = {}  # token -> expiry_timestamp
+SESSIONS_LOCK = asyncio.Lock()
+
+
+async def create_session() -> str:
+    token = secrets.token_urlsafe(32)
+    async with SESSIONS_LOCK:
+        SESSIONS[token] = time.time() + SESSION_TTL
+    return token
+
+
+async def is_valid_session(token: str | None) -> bool:
+    if not token:
+        return False
+    async with SESSIONS_LOCK:
+        exp = SESSIONS.get(token)
+        if exp is None:
+            return False
+        if exp < time.time():
+            SESSIONS.pop(token, None)
+            return False
+        return True
+
+
+async def destroy_session(token: str | None):
+    if not token:
+        return
+    async with SESSIONS_LOCK:
+        SESSIONS.pop(token, None)
+
+
+async def require_auth(request: Request):
+    token = request.cookies.get(SESSION_COOKIE)
+    if not await is_valid_session(token):
+        raise HTTPException(status_code=401, detail="unauthorized")
+    return token
 
 
 # ───────── Startup / Shutdown ─────────
@@ -144,8 +192,69 @@ async def health():
     return {"status": "ok", "connections": len(connections), "uptime": uptime()}
 
 
+# ───────── Auth Endpoints ─────────
+@app.post("/api/login")
+async def api_login(request: Request):
+    body = await request.json()
+    password = str(body.get("password") or "")
+    if hash_password(password) != AUTH["password_hash"]:
+        raise HTTPException(status_code=401, detail="رمز عبور اشتباه است")
+
+    token = await create_session()
+    resp = JSONResponse({"ok": True})
+    resp.set_cookie(
+        key=SESSION_COOKIE,
+        value=token,
+        max_age=SESSION_TTL,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+    return resp
+
+
+@app.post("/api/logout")
+async def api_logout(request: Request):
+    token = request.cookies.get(SESSION_COOKIE)
+    await destroy_session(token)
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(SESSION_COOKIE, path="/")
+    return resp
+
+
+@app.get("/api/me")
+async def api_me(request: Request):
+    token = request.cookies.get(SESSION_COOKIE)
+    valid = await is_valid_session(token)
+    return {"authenticated": valid}
+
+
+@app.post("/api/change-password")
+async def api_change_password(request: Request, _=Depends(require_auth)):
+    body = await request.json()
+    current = str(body.get("current_password") or "")
+    new = str(body.get("new_password") or "")
+
+    if hash_password(current) != AUTH["password_hash"]:
+        raise HTTPException(status_code=400, detail="رمز فعلی اشتباه است")
+    if len(new) < 4:
+        raise HTTPException(status_code=400, detail="رمز جدید باید حداقل ۴ کاراکتر باشد")
+
+    AUTH["password_hash"] = hash_password(new)
+
+    # همه سشن‌های دیگر را باطل می‌کنیم، فقط سشن فعلی باقی می‌ماند
+    current_token = request.cookies.get(SESSION_COOKIE)
+    async with SESSIONS_LOCK:
+        SESSIONS.clear()
+        if current_token:
+            SESSIONS[current_token] = time.time() + SESSION_TTL
+
+    return {"ok": True}
+
+
+# ───────── Stats / Links / Proxy (protected) ─────────
 @app.get("/stats")
-async def get_stats():
+async def get_stats(_=Depends(require_auth)):
     now = datetime.now()
     return {
         "active_connections": len(connections),
@@ -162,7 +271,7 @@ async def get_stats():
 
 # ───────── Link Management API ─────────
 @app.post("/api/links")
-async def create_link(request: Request):
+async def create_link(request: Request, _=Depends(require_auth)):
     body = await request.json()
     label = (body.get("label") or "لینک جدید").strip()[:60]
     limit_value = float(body.get("limit_value") or 0)
@@ -193,7 +302,7 @@ async def create_link(request: Request):
 
 
 @app.get("/api/links")
-async def list_links():
+async def list_links(_=Depends(require_auth)):
     host = get_host()
     result = []
     async with LINKS_LOCK:
@@ -212,7 +321,7 @@ async def list_links():
 
 
 @app.patch("/api/links/{uid}")
-async def toggle_link(uid: str, request: Request):
+async def toggle_link(uid: str, request: Request, _=Depends(require_auth)):
     body = await request.json()
     async with LINKS_LOCK:
         if uid not in LINKS:
@@ -231,7 +340,7 @@ async def toggle_link(uid: str, request: Request):
 
 
 @app.delete("/api/links/{uid}")
-async def delete_link(uid: str):
+async def delete_link(uid: str, _=Depends(require_auth)):
     async with LINKS_LOCK:
         LINKS.pop(uid, None)
     return {"ok": True}
@@ -476,6 +585,138 @@ async def http_proxy(target_url: str, request: Request):
         raise HTTPException(status_code=502, detail=f"Proxy error: {exc}")
 
 
+# ───────── Login Page ─────────
+LOGIN_HTML = r"""<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ورود · RVG Gateway</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --blue-50:#E6F1FB;--blue-100:#B5D4F4;--blue-200:#85B7EB;
+  --blue-300:#5BA3E8;--blue-400:#378ADD;--blue-500:#2570C2;
+  --blue-600:#185FA5;--blue-700:#11518F;--blue-800:#0C447C;--blue-900:#042C53;
+  --red-bg:#FCEBEB;--red-text:#A32D2D;
+  --border:#CFE3F7;--bg:#EEF5FE;--text-1:#042C53;
+}
+html,body{height:100%}
+body{
+  font-family:'Vazirmatn',sans-serif;
+  background:linear-gradient(135deg,var(--blue-900) 0%,#06335e 60%,var(--blue-700) 100%);
+  min-height:100vh;display:flex;align-items:center;justify-content:center;
+  padding:20px;color:var(--text-1);
+}
+.login-card{
+  background:#fff;border-radius:18px;padding:34px 30px;
+  width:100%;max-width:380px;box-shadow:0 16px 50px rgba(4,44,83,0.35);
+}
+.login-logo{display:flex;align-items:center;gap:12px;margin-bottom:22px}
+.login-logo img{width:46px;height:46px;border-radius:12px;object-fit:cover;border:1px solid var(--border)}
+.login-logo-name{font-size:16px;font-weight:700;color:var(--blue-900)}
+.login-logo-sub{font-size:11px;color:var(--blue-400);margin-top:2px}
+.login-title{font-size:18px;font-weight:700;margin-bottom:6px;color:var(--blue-900)}
+.login-sub{font-size:12.5px;color:var(--blue-400);margin-bottom:22px}
+.form-group{margin-bottom:16px;display:flex;flex-direction:column;gap:7px}
+.form-label{font-size:12px;font-weight:600;color:var(--blue-700)}
+.form-input{
+  padding:12px 14px;border-radius:10px;border:1px solid var(--border);
+  font-family:inherit;font-size:14px;outline:none;background:var(--bg);
+  transition:.15s;color:var(--text-1);
+}
+.form-input:focus{border-color:var(--blue-400);background:#fff}
+.btn-login{
+  width:100%;padding:13px;border-radius:10px;border:none;cursor:pointer;
+  background:var(--blue-600);color:#fff;font-family:inherit;font-size:14px;
+  font-weight:600;display:flex;align-items:center;justify-content:center;gap:8px;
+  transition:.15s;box-shadow:0 4px 14px rgba(24,95,165,0.3);
+}
+.btn-login:hover{background:var(--blue-700)}
+.btn-login:disabled{opacity:.6;cursor:not-allowed}
+.error-box{
+  background:var(--red-bg);color:var(--red-text);font-size:12.5px;
+  padding:10px 13px;border-radius:9px;margin-bottom:14px;display:none;
+  align-items:center;gap:8px;
+}
+.error-box.show{display:flex}
+.login-footer{margin-top:22px;text-align:center;font-size:11.5px;color:var(--blue-400)}
+.login-footer a{color:var(--blue-500);text-decoration:none;font-weight:600}
+</style>
+</head>
+<body>
+  <div class="login-card">
+    <div class="login-logo">
+      <img src="https://yt3.googleusercontent.com/vA6bYj1V386YmibpWRNFJtsRRqwfY_U9wnb7gmW90eRVXyNB7gAfjj1XPs5UX0cdKdQprrI=s160-c-k-c0x00ffffff-no-rj" alt="codebox">
+      <div>
+        <div class="login-logo-name">codebox</div>
+        <div class="login-logo-sub">RVG Gateway · v6.0</div>
+      </div>
+    </div>
+    <div class="login-title">ورود به پنل مدیریت</div>
+    <div class="login-sub">برای دسترسی به داشبورد، رمز عبور را وارد کنید</div>
+
+    <div class="error-box" id="err-box"><i class="ti ti-alert-circle"></i> <span id="err-text"></span></div>
+
+    <form id="login-form">
+      <div class="form-group">
+        <label class="form-label">رمز عبور</label>
+        <input class="form-input" type="password" id="password" placeholder="••••••••" autofocus required>
+      </div>
+      <button class="btn-login" type="submit" id="login-btn"><i class="ti ti-login-2"></i> ورود</button>
+    </form>
+
+    <div class="login-footer">
+      کانال تلگرام <a href="https://t.me/CodeBoxo" target="_blank" rel="noopener">@CodeBoxo</a>
+    </div>
+  </div>
+
+<script>
+const form=document.getElementById('login-form');
+const errBox=document.getElementById('err-box');
+const errText=document.getElementById('err-text');
+const btn=document.getElementById('login-btn');
+
+form.addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  errBox.classList.remove('show');
+  btn.disabled=true;
+  btn.innerHTML='<i class="ti ti-loader-2"></i> در حال ورود...';
+  const password=document.getElementById('password').value;
+  try{
+    const r=await fetch('/api/login',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({password})
+    });
+    if(!r.ok){
+      const d=await r.json().catch(()=>({}));
+      throw new Error(d.detail||'خطا در ورود');
+    }
+    location.href='/dashboard';
+  }catch(err){
+    errText.textContent=err.message;
+    errBox.classList.add('show');
+    btn.disabled=false;
+    btn.innerHTML='<i class="ti ti-login-2"></i> ورود';
+  }
+});
+</script>
+</body>
+</html>"""
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    token = request.cookies.get(SESSION_COOKIE)
+    if await is_valid_session(token):
+        return RedirectResponse(url="/dashboard")
+    return HTMLResponse(content=LOGIN_HTML)
+
+
 # ───────── Dashboard (SPA) ─────────
 DASHBOARD_HTML = r"""<!DOCTYPE html>
 <html lang="fa" dir="rtl">
@@ -507,11 +748,12 @@ body{font-family:'Vazirmatn',sans-serif;background:var(--bg);color:var(--text-1)
 a{color:inherit}
 
 /* SIDEBAR */
-.sidebar{width:236px;min-height:100vh;background:linear-gradient(180deg,var(--blue-900) 0%,#031f3c 100%);display:flex;flex-direction:column;flex-shrink:0;position:fixed;right:0;top:0;bottom:0;z-index:100}
+.sidebar{width:236px;min-height:100vh;background:linear-gradient(180deg,var(--blue-900) 0%,#031f3c 100%);display:flex;flex-direction:column;flex-shrink:0;position:fixed;right:0;top:0;bottom:0;z-index:200;transition:transform .25s ease}
 .logo{display:flex;align-items:center;gap:11px;padding:22px 18px 20px;border-bottom:1px solid rgba(255,255,255,0.06)}
 .logo img{width:42px;height:42px;border-radius:11px;object-fit:cover;border:1px solid rgba(255,255,255,0.1)}
 .logo-name{color:#fff;font-size:15px;font-weight:700;letter-spacing:.01em}
 .logo-sub{color:var(--blue-300);font-size:11px;margin-top:2px}
+.sidebar-close{display:none;position:absolute;left:14px;top:24px;background:rgba(255,255,255,0.06);border:none;color:#fff;width:34px;height:34px;border-radius:9px;font-size:18px;align-items:center;justify-content:center;cursor:pointer}
 .nav-scroll{flex:1;overflow-y:auto;padding-bottom:10px}
 .nav-group-label{color:var(--blue-400);font-size:10px;letter-spacing:.1em;padding:18px 20px 6px;text-transform:uppercase;font-weight:600}
 .nav-item{display:flex;align-items:center;gap:10px;padding:10px 20px;color:var(--blue-200);font-size:13px;cursor:pointer;border-right:3px solid transparent;transition:.15s;user-select:none;position:relative}
@@ -524,6 +766,17 @@ a{color:inherit}
 .tg-btn{display:flex;align-items:center;justify-content:center;gap:8px;background:linear-gradient(135deg,#0098e6,#0077bb);color:#fff;border-radius:10px;padding:11px;font-size:13px;font-weight:500;font-family:inherit;border:none;cursor:pointer;width:100%;text-decoration:none;transition:.15s;box-shadow:0 4px 14px rgba(0,136,204,0.25)}
 .tg-btn:hover{filter:brightness(1.08)}
 .tg-btn i{font-size:18px}
+.logout-btn{display:flex;align-items:center;justify-content:center;gap:8px;background:rgba(226,75,74,0.12);color:#f0a5a5;border-radius:10px;padding:10px;font-size:12.5px;font-weight:500;font-family:inherit;border:1px solid rgba(226,75,74,0.25);cursor:pointer;width:100%;transition:.15s;margin-top:10px}
+.logout-btn:hover{background:rgba(226,75,74,0.2);color:#fff}
+
+/* MOBILE TOPBAR + OVERLAY */
+.mobile-topbar{display:none;position:fixed;top:0;right:0;left:0;height:56px;background:linear-gradient(180deg,var(--blue-900) 0%,#06335e 100%);z-index:150;align-items:center;justify-content:space-between;padding:0 14px;box-shadow:0 2px 10px rgba(4,44,83,0.15)}
+.mobile-topbar .mt-left{display:flex;align-items:center;gap:10px}
+.mobile-topbar .mt-left img{width:32px;height:32px;border-radius:9px;object-fit:cover}
+.mobile-topbar .mt-title{color:#fff;font-size:14px;font-weight:700}
+.menu-btn{background:rgba(255,255,255,0.08);border:none;color:#fff;width:38px;height:38px;border-radius:10px;font-size:19px;display:flex;align-items:center;justify-content:center;cursor:pointer}
+.sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(4,44,83,0.45);z-index:190;backdrop-filter:blur(2px)}
+.sidebar-overlay.show{display:block}
 
 /* MAIN */
 .main{margin-right:236px;flex:1;padding:26px 28px 50px;max-width:calc(100% - 236px)}
@@ -662,10 +915,18 @@ a{color:inherit}
 .idea-badge{display:inline-block;margin-top:10px;font-size:10px;background:var(--blue-50);color:var(--blue-500);padding:3px 9px;border-radius:20px;font-weight:600}
 
 @media(max-width:1000px){
-  .sidebar{display:none}.main{margin-right:0;max-width:100%}
+  .sidebar{transform:translateX(100%)}
+  .sidebar.open{transform:translateX(0);box-shadow:-8px 0 30px rgba(4,44,83,0.3)}
+  .sidebar-close{display:flex}
+  .main{margin-right:0;max-width:100%;padding-top:72px}
+  .mobile-topbar{display:flex}
   .metrics{grid-template-columns:1fr 1fr}
   .grid2,.grid3{grid-template-columns:1fr}
   .idea-grid{grid-template-columns:1fr}
+}
+@media(max-width:480px){
+  .metrics{grid-template-columns:1fr}
+  .main{padding-left:14px;padding-right:14px}
 }
 </style>
 </head>
@@ -673,8 +934,21 @@ a{color:inherit}
 
 <div class="toast" id="toast"></div>
 
+<!-- MOBILE TOPBAR -->
+<div class="mobile-topbar">
+  <div class="mt-left">
+    <img src="https://yt3.googleusercontent.com/vA6bYj1V386YmibpWRNFJtsRRqwfY_U9wnb7gmW90eRVXyNB7gAfjj1XPs5UX0cdKdQprrI=s160-c-k-c0x00ffffff-no-rj" alt="codebox">
+    <span class="mt-title">RVG Gateway</span>
+  </div>
+  <button class="menu-btn" id="open-sidebar-btn"><i class="ti ti-menu-2"></i></button>
+</div>
+
+<!-- OVERLAY -->
+<div class="sidebar-overlay" id="sidebar-overlay"></div>
+
 <!-- SIDEBAR -->
-<aside class="sidebar">
+<aside class="sidebar" id="sidebar">
+  <button class="sidebar-close" id="close-sidebar-btn"><i class="ti ti-x"></i></button>
   <div class="logo">
     <img src="https://yt3.googleusercontent.com/vA6bYj1V386YmibpWRNFJtsRRqwfY_U9wnb7gmW90eRVXyNB7gAfjj1XPs5UX0cdKdQprrI=s160-c-k-c0x00ffffff-no-rj" alt="codebox">
     <div>
@@ -703,6 +977,7 @@ a{color:inherit}
     <a class="tg-btn" href="https://t.me/CodeBoxo" target="_blank" rel="noopener">
       <i class="ti ti-brand-telegram"></i> @CodeBoxo
     </a>
+    <button class="logout-btn" id="logout-btn"><i class="ti ti-logout"></i> خروج از حساب</button>
   </div>
 </aside>
 
@@ -954,7 +1229,7 @@ a{color:inherit}
 
     <div class="callout amber">
       <i class="ti ti-alert-triangle"></i>
-      <span>توجه: تمام لینک‌های ساخته‌شده و آمار مصرف به‌صورت <b>درون‌حافظه (in-memory)</b> ذخیره می‌شوند و با ری‌استارت شدن سرویس روی Railway، پاک خواهند شد. برای ذخیره دائمی، نیاز به اتصال یک دیتابیس (مثل Redis یا PostgreSQL) است.</span>
+      <span>توجه: تمام لینک‌های ساخته‌شده، آمار مصرف و رمز عبور پنل به‌صورت <b>درون‌حافظه (in-memory)</b> ذخیره می‌شوند و با ری‌استارت شدن سرویس روی Railway، به مقادیر پیش‌فرض بازخواهند گشت (رمز پیش‌فرض: 123456). برای ذخیره دائمی، نیاز به اتصال یک دیتابیس (مثل Redis یا PostgreSQL) است.</span>
     </div>
   </section>
 
@@ -1032,8 +1307,8 @@ a{color:inherit}
       <div class="idea-card">
         <div class="idea-icon"><i class="ti ti-lock-access"></i></div>
         <div class="idea-title">رمز ورود به داشبورد</div>
-        <div class="idea-desc">افزودن یک صفحه لاگین ساده با پسورد برای جلوگیری از دسترسی عمومی به پنل مدیریت.</div>
-        <span class="idea-badge">پیشنهادی</span>
+        <div class="idea-desc">سیستم لاگین با سشن و امکان تغییر رمز از داخل پنل — اکنون فعال است.</div>
+        <span class="idea-badge">آماده در نسخه فعلی</span>
       </div>
       <div class="idea-card">
         <div class="idea-icon"><i class="ti ti-server-2"></i></div>
@@ -1090,15 +1365,37 @@ a{color:inherit}
         <div class="status-row"><span class="status-key"><i class="ti ti-brand-fastapi"></i> فریم‌ورک</span><span class="status-val">FastAPI + Uvicorn</span></div>
         <div class="status-row"><span class="status-key"><i class="ti ti-cloud"></i> پلتفرم</span><span class="status-val">Railway</span></div>
       </div>
+
       <div class="card">
-        <div class="card-title"><i class="ti ti-brand-telegram"></i> ارتباط با ما</div>
-        <div style="font-size:12.5px;color:var(--blue-700);line-height:1.9;margin-bottom:14px">
-          برای دریافت آخرین آپدیت‌ها، آموزش‌ها و پشتیبانی پروژه‌های شبکه و برنامه‌نویسی، به کانال تلگرام <b>codebox</b> بپیوندید.
+        <div class="card-title"><i class="ti ti-key"></i> تغییر رمز عبور پنل</div>
+        <div class="form-group" style="margin-bottom:14px">
+          <label class="form-label">رمز فعلی</label>
+          <input class="form-input" type="password" id="cp-current" placeholder="رمز فعلی" style="width:100%">
         </div>
-        <a class="tg-btn" href="https://t.me/CodeBoxo" target="_blank" rel="noopener" style="max-width:240px">
-          <i class="ti ti-brand-telegram"></i> پیوستن به @CodeBoxo
-        </a>
+        <div class="form-group" style="margin-bottom:14px">
+          <label class="form-label">رمز جدید</label>
+          <input class="form-input" type="password" id="cp-new" placeholder="حداقل ۴ کاراکتر" style="width:100%">
+        </div>
+        <div class="form-group" style="margin-bottom:16px">
+          <label class="form-label">تکرار رمز جدید</label>
+          <input class="form-input" type="password" id="cp-confirm" placeholder="تکرار رمز جدید" style="width:100%">
+        </div>
+        <button class="btn btn-primary" onclick="changePassword()" style="width:100%;justify-content:center"><i class="ti ti-key"></i> تغییر رمز عبور</button>
+        <div class="callout" style="margin-top:14px">
+          <i class="ti ti-info-circle"></i>
+          <span>رمز پیش‌فرض پنل <b>123456</b> است. پس از تغییر رمز، تمام سشن‌های دیگر باطل می‌شوند و باید مجدداً وارد شوید.</span>
+        </div>
       </div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <div class="card-title"><i class="ti ti-brand-telegram"></i> ارتباط با ما</div>
+      <div style="font-size:12.5px;color:var(--blue-700);line-height:1.9;margin-bottom:14px">
+        برای دریافت آخرین آپدیت‌ها، آموزش‌ها و پشتیبانی پروژه‌های شبکه و برنامه‌نویسی، به کانال تلگرام <b>codebox</b> بپیوندید.
+      </div>
+      <a class="tg-btn" href="https://t.me/CodeBoxo" target="_blank" rel="noopener" style="max-width:240px">
+        <i class="ti ti-brand-telegram"></i> پیوستن به @CodeBoxo
+      </a>
     </div>
   </section>
 
@@ -1126,6 +1423,65 @@ function fmtBytes(b){
   return (b/(1024*1024*1024)).toFixed(2)+' GB';
 }
 
+/* ───────── Auth Guard ───────── */
+async function checkAuth(){
+  try{
+    const r=await fetch('/api/me');
+    const d=await r.json();
+    if(!d.authenticated){
+      location.href='/login';
+    }
+  }catch(e){
+    location.href='/login';
+  }
+}
+
+async function logout(){
+  try{ await fetch('/api/logout',{method:'POST'}); }catch(e){}
+  location.href='/login';
+}
+document.getElementById('logout-btn').addEventListener('click', logout);
+
+/* ───────── Change Password ───────── */
+async function changePassword(){
+  const cur=document.getElementById('cp-current').value;
+  const nw=document.getElementById('cp-new').value;
+  const cf=document.getElementById('cp-confirm').value;
+
+  if(!cur || !nw || !cf){ toast('✗ همه فیلدها را پر کنید', true); return; }
+  if(nw.length<4){ toast('✗ رمز جدید باید حداقل ۴ کاراکتر باشد', true); return; }
+  if(nw!==cf){ toast('✗ رمز جدید و تکرار آن یکسان نیستند', true); return; }
+
+  try{
+    const r=await fetch('/api/change-password',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({current_password:cur,new_password:nw})
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(d.detail||'خطا در تغییر رمز');
+    toast('✓ رمز عبور با موفقیت تغییر کرد');
+    document.getElementById('cp-current').value='';
+    document.getElementById('cp-new').value='';
+    document.getElementById('cp-confirm').value='';
+  }catch(e){ toast('✗ '+e.message, true); }
+}
+
+/* ───────── Mobile Sidebar ───────── */
+const sidebar=document.getElementById('sidebar');
+const overlay=document.getElementById('sidebar-overlay');
+function openSidebar(){
+  sidebar.classList.add('open');
+  overlay.classList.add('show');
+}
+function closeSidebar(){
+  sidebar.classList.remove('open');
+  overlay.classList.remove('show');
+}
+document.getElementById('open-sidebar-btn').addEventListener('click', openSidebar);
+document.getElementById('close-sidebar-btn').addEventListener('click', closeSidebar);
+overlay.addEventListener('click', closeSidebar);
+
 /* ───────── Navigation ───────── */
 function switchPage(name){
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.toggle('active', n.dataset.page===name));
@@ -1133,15 +1489,27 @@ function switchPage(name){
   if(name==='links') loadLinks();
   if(name==='connections') loadConnections();
   if(name==='errors') loadErrorsFull();
+  closeSidebar();
+  window.scrollTo({top:0, behavior:'smooth'});
 }
 document.querySelectorAll('.nav-item').forEach(item=>{
   item.addEventListener('click', ()=>switchPage(item.dataset.page));
 });
 
+/* ───────── Fetch wrapper with auth handling ───────── */
+async function authFetch(url, opts){
+  const r=await fetch(url, opts);
+  if(r.status===401){
+    location.href='/login';
+    throw new Error('unauthorized');
+  }
+  return r;
+}
+
 /* ───────── Stats / Charts ───────── */
 async function fetchStats(){
   try{
-    const r=await fetch('/stats');
+    const r=await authFetch('/stats');
     const d=await r.json();
 
     document.getElementById('m-conns').textContent=d.active_connections;
@@ -1215,7 +1583,7 @@ function escapeHtml(s){
 /* ───────── Links Management ───────── */
 async function loadLinks(){
   try{
-    const r=await fetch('/api/links');
+    const r=await authFetch('/api/links');
     const d=await r.json();
     const tbody=document.getElementById('links-tbody');
     const empty=document.getElementById('links-empty');
@@ -1280,7 +1648,7 @@ async function createLink(){
   const value=document.getElementById('new-link-value').value;
   const unit=document.getElementById('new-link-unit').value;
   try{
-    const r=await fetch('/api/links',{
+    const r=await authFetch('/api/links',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({label, limit_value:value||0, limit_unit:unit})
@@ -1295,7 +1663,7 @@ async function createLink(){
 
 async function toggleLink(uuid, newState){
   try{
-    await fetch(`/api/links/${uuid}`,{
+    await authFetch(`/api/links/${uuid}`,{
       method:'PATCH',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({active:newState})
@@ -1307,7 +1675,7 @@ async function toggleLink(uuid, newState){
 
 async function resetUsage(uuid){
   try{
-    await fetch(`/api/links/${uuid}`,{
+    await authFetch(`/api/links/${uuid}`,{
       method:'PATCH',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({reset_usage:true})
@@ -1320,7 +1688,7 @@ async function resetUsage(uuid){
 async function deleteLink(uuid){
   if(!confirm('آیا از حذف این لینک مطمئن هستید؟')) return;
   try{
-    await fetch(`/api/links/${uuid}`,{method:'DELETE'});
+    await authFetch(`/api/links/${uuid}`,{method:'DELETE'});
     toast('✓ لینک حذف شد');
     loadLinks();
   }catch(e){ toast('✗ خطا', true); }
@@ -1335,9 +1703,8 @@ function qrForText(text){
 
 /* ───────── Connections Page ───────── */
 async function loadConnections(){
-  // یک endpoint سبک برای جزئیات اتصالات وجود ندارد روی /stats، پس از همان داده‌های موجود استفاده می‌کنیم
   try{
-    const r=await fetch('/stats');
+    const r=await authFetch('/stats');
     const d=await r.json();
     const tbody=document.getElementById('conns-tbody');
     const empty=document.getElementById('conns-empty');
@@ -1346,7 +1713,6 @@ async function loadConnections(){
       empty.style.display='block';
     } else {
       empty.style.display='none';
-      // نمایش placeholder چون جزئیات per-connection روی /stats نیست
       tbody.innerHTML=`<tr><td colspan="4" style="text-align:center;color:var(--blue-400);padding:20px">
         ${d.active_connections} اتصال فعال در حال انتقال داده — برای جزئیات کامل هر اتصال، endpoint <code>/api/connections</code> را اضافه کنید.
       </td></tr>`;
@@ -1356,7 +1722,7 @@ async function loadConnections(){
 
 async function loadErrorsFull(){
   try{
-    const r=await fetch('/stats');
+    const r=await authFetch('/stats');
     const d=await r.json();
     renderErrors(d.recent_errors||[]);
   }catch(e){}
@@ -1365,7 +1731,7 @@ async function loadErrorsFull(){
 /* ───────── VLESS overview link ───────── */
 async function fetchOverviewVless(){
   try{
-    const r=await fetch('/api/links');
+    const r=await authFetch('/api/links');
     const d=await r.json();
     const links=d.links||[];
     const def = links.find(l=>l.limit_bytes===0) || links[0];
@@ -1470,7 +1836,8 @@ function initCharts(){
   });
 }
 
-document.addEventListener('DOMContentLoaded',()=>{
+document.addEventListener('DOMContentLoaded',async ()=>{
+  await checkAuth();
   initCharts();
   document.getElementById('set-host').textContent=location.host;
   fetchStats();
@@ -1485,8 +1852,11 @@ document.addEventListener('DOMContentLoaded',()=>{
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
-async def dashboard():
+async def dashboard(request: Request):
     await ensure_default_link()
+    token = request.cookies.get(SESSION_COOKIE)
+    if not await is_valid_session(token):
+        return RedirectResponse(url="/login")
     return HTMLResponse(content=DASHBOARD_HTML)
 
 
