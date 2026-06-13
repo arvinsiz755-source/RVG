@@ -1,54 +1,29 @@
 #!/bin/bash
-# entrypoint.sh - تنظیم خودکار متغیرهای محیطی
+# entrypoint.sh - تنظیم خودکار متغیرهای محیطی برای سرعت بالا
 
-echo "🔄 تنظیم خودکار متغیرهای محیطی..."
+echo "🔄 تنظیم خودکار متغیرهای محیطی برای سرعت بالا..."
 
-# تنظیم متغیرهای محیطی بهینه برای FastAPI/Uvicorn
-export WEB_CONCURRENCY=${WEB_CONCURRENCY:-4}
-export UVICORN_WORKERS=${UVICORN_WORKERS:-4}
+# تنظیم متغیرها اگر از قبل تنظیم نشده باشند
+export UVICORN_WORKERS=${UVICORN_WORKERS:-2}
+export UVICORN_LIMIT_CONCURRENCY=${UVICORN_LIMIT_CONCURRENCY:-2000}
 export PYTHONOPTIMIZE=${PYTHONOPTIMIZE:-2}
-export PYTHONDONTWRITEBYTECODE=${PYTHONDONTWRITEBYTECODE:-1}
-export PYTHONUNBUFFERED=${PYTHONUNBUFFERED:-1}
+export WEB_CONCURRENCY=${WEB_CONCURRENCY:-2}
 
-# تنظیمات Railway
-if [ -n "$RAILWAY_PUBLIC_DOMAIN" ]; then
-    echo "✅ Railway domain detected: $RAILWAY_PUBLIC_DOMAIN"
-    export HOST=$RAILWAY_PUBLIC_DOMAIN
-fi
+# تنظیمات حافظه
+export UVICORN_BACKLOG=${UVICORN_BACKLOG:-4096}
+export UVICORN_TIMEOUT_KEEP_ALIVE=${UVICORN_TIMEOUT_KEEP_ALIVE:-30}
 
-# تنظیمات حافظه و همزمانی
-export UVICORN_LIMIT_CONCURRENCY=${UVICORN_LIMIT_CONCURRENCY:-1000}
-export UVICORN_BACKLOG=${UVICORN_BACKLOG:-2048}
+# تنظیمات لاگ (کاهش برای سرعت)
+export UVICORN_LOG_LEVEL=${UVICORN_LOG_LEVEL:-warning}
 
-# تنظیمات لاگ (برای کاهش لاگ در production)
-if [ "$ENVIRONMENT" = "production" ]; then
-    export UVICORN_LOG_LEVEL="warning"
-else
-    export UVICORN_LOG_LEVEL=${UVICORN_LOG_LEVEL:-"info"}
-fi
-
-# تنظیمات دیتابیس (اختیاری)
-if [ -n "$DATABASE_URL" ]; then
-    echo "✅ Database connection configured"
-fi
-
-# تنظیمات تلگرام (اختیاری)
-if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
-    echo "✅ Telegram notifications enabled"
-fi
-
-# تنظیمات Redis برای کش (اختیاری)
-if [ -n "$REDIS_URL" ]; then
-    echo "✅ Redis cache enabled"
-fi
-
-echo "🚀 متغیرهای محیطی تنظیم شدند:"
-echo "   - WEB_CONCURRENCY: $WEB_CONCURRENCY"
+# نمایش متغیرهای تنظیم شده
+echo "✅ متغیرهای تنظیم شده:"
 echo "   - UVICORN_WORKERS: $UVICORN_WORKERS"
-echo "   - LOG_LEVEL: ${UVICORN_LOG_LEVEL:-info}"
-echo "   - LIMIT_CONCURRENCY: $UVICORN_LIMIT_CONCURRENCY"
+echo "   - UVICORN_LIMIT_CONCURRENCY: $UVICORN_LIMIT_CONCURRENCY"
+echo "   - PYTHONOPTIMIZE: $PYTHONOPTIMIZE"
+echo "   - UVICORN_BACKLOG: $UVICORN_BACKLOG"
 
-# اجرای دستور اصلی
+# اجرای uvicorn با متغیرهای تنظیم شده
 exec uvicorn main:app \
     --host 0.0.0.0 \
     --port ${PORT:-8000} \
