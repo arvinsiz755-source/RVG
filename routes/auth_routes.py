@@ -1,7 +1,7 @@
 from pathlib import Path
-from fastapi import APIRouter, Request, Depends
+from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from auth import require_auth, is_valid_session, create_session, set_session_cookie
+from auth import is_valid_session
 from config import SESSION_COOKIE
 
 router = APIRouter()
