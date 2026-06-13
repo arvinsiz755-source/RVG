@@ -5,13 +5,10 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-# import state  # این خط را حذف کنید
+import state
 from config import CONFIG
 from routes import auth_routes, links_routes, stats_routes
 from proxy import vless, http_proxy
-
-# ایجاد متغیر global ساده
-http_client = None
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("RVG-Gateway")
@@ -36,18 +33,16 @@ app.include_router(http_proxy.router)
 
 @app.on_event("startup")
 async def startup():
-    global http_client
     limits = httpx.Limits(max_connections=500, max_keepalive_connections=100)
     timeout = httpx.Timeout(30.0, connect=10.0)
-    http_client = httpx.AsyncClient(limits=limits, timeout=timeout, follow_redirects=True)
+    state.http_client = httpx.AsyncClient(limits=limits, timeout=timeout, follow_redirects=True)
     logger.info(f"🚀 RVG Gateway started on port {CONFIG['port']}")
 
 
 @app.on_event("shutdown")
 async def shutdown():
-    global http_client
-    if http_client:
-        await http_client.aclose()
+    if state.http_client:
+        await state.http_client.aclose()
 
 
 if __name__ == "__main__":
