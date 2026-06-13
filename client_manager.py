@@ -43,6 +43,7 @@ class ClientManager:
     
     def _create_sample_data(self):
         """ایجاد داده‌های نمونه (بر اساس تصویر شما)"""
+        now = datetime.now().isoformat()
         sample_clients = [
             ClientData(
                 username="kiddo-jxl7x2a6",
@@ -53,8 +54,8 @@ class ClientManager:
                 total_limit_gb=31.35,
                 used_gb=31.35,
                 expiry_days=0,
-                created_at=datetime.now().isoformat(),
-                last_reset=datetime.now().isoformat(),
+                created_at=now,
+                last_reset=now,
                 status="disabled",
                 group="Sajdaj,Seyed"
             ),
@@ -67,8 +68,8 @@ class ClientManager:
                 total_limit_gb=100.0,
                 used_gb=46.56,
                 expiry_days=24,
-                created_at=datetime.now().isoformat(),
-                last_reset=datetime.now().isoformat(),
+                created_at=now,
+                last_reset=now,
                 status="offline",
                 group="Sajdaj,Seyed",
                 telegram_user_id=123456789
@@ -82,8 +83,8 @@ class ClientManager:
                 total_limit_gb=50.0,
                 used_gb=0.08094,
                 expiry_days=25,
-                created_at=datetime.now().isoformat(),
-                last_reset=datetime.now().isoformat(),
+                created_at=now,
+                last_reset=now,
                 status="offline",
                 group="Sajdaj,Seyed"
             ),
@@ -96,9 +97,23 @@ class ClientManager:
                 total_limit_gb=100.0,
                 used_gb=2.68,
                 expiry_days=24,
-                created_at=datetime.now().isoformat(),
-                last_reset=datetime.now().isoformat(),
+                created_at=now,
+                last_reset=now,
                 status="offline",
+                group="Sajdaj,Seyed"
+            ),
+            ClientData(
+                username="xfqfeqx",
+                email="xfqfeqx@example.com",
+                subscription_id="zf18xs645t66e8tu",
+                password="",
+                uuid=str(uuid_lib.uuid4()),
+                total_limit_gb=15.0,
+                used_gb=15.04,
+                expiry_days=0,
+                created_at=now,
+                last_reset=now,
+                status="ended",
                 group="Sajdaj,Seyed"
             ),
         ]
@@ -124,7 +139,7 @@ class ClientManager:
         """ایجاد کاربر جدید"""
         client = ClientData(
             username=client_data.get("username"),
-            email=client_data.get("email"),
+            email=client_data.get("email", ""),
             subscription_id=client_data.get("subscription_id", str(uuid_lib.uuid4())[:16]),
             password=client_data.get("password", ""),
             uuid=client_data.get("uuid", str(uuid_lib.uuid4())),
@@ -158,10 +173,6 @@ class ClientManager:
                     setattr(client, key, bool(value))
                 else:
                     setattr(client, key, value)
-        
-        # اگر تاریخ ایجاد تغییر کرد، last_reset را هم به‌روز کن
-        if "created_at" in update_data:
-            client.last_reset = datetime.now().isoformat()
         
         self.save()
         return client
