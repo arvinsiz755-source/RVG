@@ -37,7 +37,7 @@ async def require_auth(request: Request):
     return token
 
 def set_session_cookie(resp, token: str):
-    resp.set_cookie(key=SESSION_COOKIE, value=token, httponly=True, samesite="lax", path="/", secure=False)
+    resp.set_cookie(key=SESSION_COOKIE, value=token, httponly=True, samesite="lax", path="/")
 
 @router.post("/api/login")
 async def api_login(request: Request):
