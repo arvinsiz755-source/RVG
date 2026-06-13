@@ -27,7 +27,7 @@ async def api_login(request: Request):
 
     token = await create_session()
     resp = JSONResponse({"ok": True})
-    set_session_cookie(resp, token)  # استفاده از تابع کمکی
+    set_session_cookie(resp, token)
     return resp
 
 
@@ -65,12 +65,12 @@ async def api_change_password(request: Request, _=Depends(require_auth)):
     async with state.SESSIONS_LOCK:
         state.SESSIONS.clear()
         if current_token:
-            state.SESSIONS[current_token] = __import__("time").time() + 43200  # 12 ساعت
+            state.SESSIONS[current_token] = __import__("time").time() + 43200
 
     return {"ok": True}
 
 
-# ───────── Pages ─────────
+# ───────── Pages با محافظت ─────────
 @router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
     token = request.cookies.get(SESSION_COOKIE)
@@ -81,13 +81,18 @@ async def login_page(request: Request):
 
 @router.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    await ensure_default_link()
+    # بررسی احراز هویت قبل از نمایش صفحه
     token = request.cookies.get(SESSION_COOKIE)
     if not await is_valid_session(token):
         return RedirectResponse(url="/login")
+    await ensure_default_link()
     return HTMLResponse(content=_read_template("dashboard.html"))
 
 
-@router.get("/test-ws", response_class=HTMLResponse)
-async def test_ws_redirect():
-    return HTMLResponse(content="<script>location.href='/dashboard';</script>")
+@router.get("/")
+async def root_redirect(request: Request):
+    """ری‌دایرکت روت به دشبورد یا لاگین"""
+    token = request.cookies.get(SESSION_COOKIE)
+    if await is_valid_session(token):
+        return RedirectResponse(url="/dashboard")
+    return RedirectResponse(url="/login")
