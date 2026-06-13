@@ -69,12 +69,7 @@ app.include_router(vless.router)
 app.include_router(http_proxy.router)
 
 # Client routes (اختیاری - اگر فایل وجود داشت اضافه کن)
-try:
-    from routes import client_routes
-    app.include_router(client_routes.router)
-    logger.info("✅ Client routes loaded")
-except ImportError:
-    logger.info("⚠️ Client routes not available")
+
 
 
 @app.on_event("startup")
