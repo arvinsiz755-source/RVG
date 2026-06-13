@@ -4,8 +4,8 @@ from fastapi import APIRouter, Request, HTTPException, Depends
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 import state
-from auth import create_session, is_valid_session, destroy_session, require_auth
-from config import AUTH, SESSION_COOKIE, SESSION_TTL, hash_password
+from auth import create_session, is_valid_session, destroy_session, require_auth, set_session_cookie, clear_session_cookie
+from config import AUTH, SESSION_COOKIE, hash_password
 from proxy.vless import ensure_default_link
 
 router = APIRouter()
@@ -27,18 +27,7 @@ async def api_login(request: Request):
 
     token = await create_session()
     resp = JSONResponse({"ok": True})
-    # ───── فیکس مشکل ۳ ─────
-    # max_age عمداً ست نمیشه تا کوکی از نوع "session cookie" باشه:
-    # با بسته‌شدن مرورگر/تب، کوکی پاک میشه و کاربر دفعه بعد باید
-    # دوباره لاگین کنه. اعتبار سمت سرور هم با SESSION_TTL کنترل میشه.
-    resp.set_cookie(
-        key=SESSION_COOKIE,
-        value=token,
-        httponly=True,
-        samesite="lax",
-        path="/",
-        # max_age=SESSION_TTL,  # اگر می‌خوای کوکی persistent باشه، این خط رو فعال کن
-    )
+    set_session_cookie(resp, token)  # استفاده از تابع کمکی
     return resp
 
 
@@ -47,7 +36,7 @@ async def api_logout(request: Request):
     token = request.cookies.get(SESSION_COOKIE)
     await destroy_session(token)
     resp = JSONResponse({"ok": True})
-    resp.delete_cookie(SESSION_COOKIE, path="/")
+    clear_session_cookie(resp)
     return resp
 
 
@@ -76,7 +65,7 @@ async def api_change_password(request: Request, _=Depends(require_auth)):
     async with state.SESSIONS_LOCK:
         state.SESSIONS.clear()
         if current_token:
-            state.SESSIONS[current_token] = __import__("time").time() + SESSION_TTL
+            state.SESSIONS[current_token] = __import__("time").time() + 43200  # 12 ساعت
 
     return {"ok": True}
 
