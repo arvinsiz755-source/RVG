@@ -89,6 +89,14 @@ async def startup():
     state.http_client = httpx.AsyncClient(limits=limits, timeout=timeout, follow_redirects=True, http2=True)  # فعال کردن HTTP/2
     logger.info(f"🚀 RVG Gateway started on port {CONFIG['port']} with optimized settings")
 
+@app.on_event("startup")
+async def startup():
+    # تنظیم خودکار متغیرهای محیطی
+    try:
+        from railway_setup import setup_railway_env
+        await setup_railway_env()
+    except ImportError:
+        pass
 
 @app.on_event("shutdown")
 async def shutdown():
