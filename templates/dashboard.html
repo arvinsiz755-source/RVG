@@ -725,15 +725,16 @@ function fmtBytes(b){
    چون کوکی سشن به‌صورت session-only ست شده (بدون max_age)، با بسته‌شدن
    کامل مرورگر کوکی پاک می‌شود و کاربر باید دوباره از /login وارد شود. */
 async function checkAuth(){
-  try{
-    const r=await fetch('/api/me');
-    const d=await r.json();
-    if(!d.authenticated){
-      location.href='/login';
+    try{
+        const r=await fetch('/api/me');
+        const d=await r.json();
+        if(!d.authenticated){
+            // اگر سشن معتبر نبود، به صفحه لاگین برو
+            location.href='/login';
+        }
+    }catch(e){
+        location.href='/login';
     }
-  }catch(e){
-    location.href='/login';
-  }
 }
 
 async function logout(){
@@ -1041,6 +1042,23 @@ async function loadConnections(){
   }catch(e){ console.error(e); }
 }
 
+let authInterval;
+function startAuthCheck(){
+    if(authInterval) clearInterval(authInterval);
+    authInterval = setInterval(async () => {
+        try{
+            const r = await fetch('/api/me');
+            const d = await r.json();
+            if(!d.authenticated){
+                toast('نشست شما منقضی شده است، لطفاً مجدداً وارد شوید', true);
+                setTimeout(() => { location.href = '/login'; }, 1500);
+            }
+        }catch(e){
+            location.href = '/login';
+        }
+    }, 5 * 60 * 1000); // هر 5 دقیقه
+}
+
 async function loadErrorsFull(){
   try{
     const r=await authFetch('/stats');
@@ -1157,15 +1175,53 @@ function initCharts(){
   });
 }
 
+/* ───────── Auth Guard ─────────
+   این تابع در هر بار باز شدن صفحه (DOMContentLoaded) اجرا می‌شود.
+   چون کوکی سشن به‌صورت session-only ست شده (بدون max_age)، با بسته‌شدن
+   کامل مرورگر کوکی پاک می‌شود و کاربر باید دوباره از /login وارد شود.
+   همچنین یک تایمر برای بررسی دوره‌ای اعتبار سشن در پس‌زمینه داریم. */
+async function checkAuth(){
+    try{
+        const r=await fetch('/api/me');
+        const d=await r.json();
+        if(!d.authenticated){
+            // اگر سشن معتبر نبود، به صفحه لاگین برو
+            location.href='/login';
+        }
+    }catch(e){
+        location.href='/login';
+    }
+}
+
+// بررسی دوره‌ای هر 5 دقیقه (برای اطمینان از معتبر بودن سشن)
+let authInterval;
+function startAuthCheck(){
+    if(authInterval) clearInterval(authInterval);
+    authInterval = setInterval(async () => {
+        try{
+            const r = await fetch('/api/me');
+            const d = await r.json();
+            if(!d.authenticated){
+                toast('نشست شما منقضی شده است، لطفاً مجدداً وارد شوید', true);
+                setTimeout(() => { location.href = '/login'; }, 1500);
+            }
+        }catch(e){
+            location.href = '/login';
+        }
+    }, 5 * 60 * 1000); // هر 5 دقیقه
+}
+
+// در DOMContentLoaded، علاوه بر checkAuth، تایمر را هم شروع کنید
 document.addEventListener('DOMContentLoaded',async ()=>{
-  await checkAuth();
-  initCharts();
-  document.getElementById('set-host').textContent=location.host;
-  fetchStats();
-  fetchOverviewVless();
-  loadLinks();
-  setInterval(fetchStats,4000);
-  setInterval(()=>{ if(document.getElementById('page-links').classList.contains('active')) loadLinks(); }, 5000);
+    await checkAuth();
+    startAuthCheck();  // شروع تایمر بررسی دوره‌ای
+    initCharts();
+    document.getElementById('set-host').textContent=location.host;
+    fetchStats();
+    fetchOverviewVless();
+    loadLinks();
+    setInterval(fetchStats,4000);
+    setInterval(()=>{ if(document.getElementById('page-links').classList.contains('active')) loadLinks(); }, 5000);
 });
 </script>
 </body>
