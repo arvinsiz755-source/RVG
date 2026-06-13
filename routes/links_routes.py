@@ -18,7 +18,7 @@ async def create_link(request: Request, _=Depends(require_auth)):
 
     limit_bytes = 0 if limit_value <= 0 else parse_size_to_bytes(limit_value, limit_unit)
 
-    uid = generate_uuid()  # کاملا رندوم
+    uid = generate_uuid()
     async with state.LINKS_LOCK:
         state.LINKS[uid] = {
             "label": label,
