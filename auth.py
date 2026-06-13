@@ -2,7 +2,7 @@ import secrets
 import time
 
 from fastapi import APIRouter, Request, HTTPException, Depends
-from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import JSONResponse
 
 from config import SESSION_COOKIE, SESSION_TTL, AUTH, hash_password
 from state import SESSIONS, SESSIONS_LOCK
@@ -26,6 +26,7 @@ async def is_valid_session(token: str | None) -> bool:
         if exp is None:
             return False
         if exp < time.time():
+            # سشن منقضی شده، حذفش کن
             SESSIONS.pop(token, None)
             return False
         return True
@@ -47,22 +48,23 @@ async def require_auth(request: Request):
 
 def set_session_cookie(resp, token: str):
     """
-    نکته مهم امنیتی:
-    کوکی به‌صورت "session cookie" تنظیم می‌شود (بدون max_age/expires)
-    یعنی با بسته‌شدن مرورگر/تب، کوکی حذف می‌شود و کاربر باید دوباره
-    لاگین کند. این یعنی هر بار که صفحه به‌صورت تازه (مرورگر جدید/تب جدید
-    بعد از بسته‌شدن کامل مرورگر) باز شود، لاگین مجدد لازم است.
-    در سمت سرور هم SESSION_TTL به‌عنوان یک محافظت اضافه (۱۲ ساعت) وجود دارد.
+    تنظیم کوکی به صورت Session Cookie (بدون max_age و expires)
+    با بسته شدن مرورگر، کوکی自動的に پاک می‌شود
     """
     resp.set_cookie(
         key=SESSION_COOKIE,
         value=token,
-        # max_age عمداً ست نمی‌شود => کوکی session-only
-        httponly=True,
-        samesite="lax",
+        httponly=True,      # جلوگیری از دسترسی جاوااسکریپت
+        samesite="lax",     # محافظت در برابر CSRF
         path="/",
-        secure=True,
+        secure=True,        # فقط از طریق HTTPS ارسال شود (در Railway کار می‌کند)
+        # توجه: max_age و expires را SET نمی‌کنیم => Session Cookie
     )
+
+
+def clear_session_cookie(resp):
+    """پاک کردن کوکی سشن"""
+    resp.delete_cookie(SESSION_COOKIE, path="/")
 
 
 # ───────── Endpoints ─────────
@@ -84,7 +86,7 @@ async def api_logout(request: Request):
     token = request.cookies.get(SESSION_COOKIE)
     await destroy_session(token)
     resp = JSONResponse({"ok": True})
-    resp.delete_cookie(SESSION_COOKIE, path="/")
+    clear_session_cookie(resp)
     return resp
 
 
@@ -116,13 +118,3 @@ async def api_change_password(request: Request, _=Depends(require_auth)):
             SESSIONS[current_token] = time.time() + SESSION_TTL
 
     return {"ok": True}
-
-
-# ───────── Login page ─────────
-def register_login_page(app, login_html: str):
-    @app.get("/login", response_class=HTMLResponse)
-    async def login_page(request: Request):
-        token = request.cookies.get(SESSION_COOKIE)
-        if await is_valid_session(token):
-            return RedirectResponse(url="/dashboard")
-        return HTMLResponse(content=login_html)
