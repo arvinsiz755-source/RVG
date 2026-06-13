@@ -1,5 +1,6 @@
 import uuid
 import re
+import time
 from config import get_host as config_get_host
 
 
@@ -77,3 +78,15 @@ def extract_uuid_from_vless(vless_link: str) -> str | None:
     if match:
         return match.group(1)
     return None
+
+
+def uptime(start_time: float = None) -> str:
+    """
+    محاسبه زمان آپتایم
+    اگر start_time داده نشود، از state.stats["start_time"] استفاده می‌کند
+    """
+    import state
+    start = start_time if start_time is not None else state.stats["start_time"]
+    secs = int(time.time() - start)
+    h, m, s = secs // 3600, (secs % 3600) // 60, secs % 60
+    return f"{h:02d}:{m:02d}:{s:02d}"
