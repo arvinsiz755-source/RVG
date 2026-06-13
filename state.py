@@ -16,6 +16,17 @@ hourly_traffic: dict = defaultdict(int)
 
 http_client: httpx.AsyncClient | None = None
 
+# ساختار لینک‌ها با اضافه شدن expiry_days
+LINKS = {
+    "uuid": {
+        "label": str,
+        "limit_bytes": int,
+        "used_bytes": int,
+        "created_at": str,
+        "active": bool,
+        "expiry_days": int,  # 0 = نامحدود
+    }
+}
 LINKS: dict = {}
 LINKS_LOCK = asyncio.Lock()
 
