@@ -14,10 +14,12 @@ TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 
 
 def _read_template(name: str) -> str:
-    return (TEMPLATES_DIR / name).read_text(encoding="utf-8")
+    try:
+        return (TEMPLATES_DIR / name).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return f"<h1>Template {name} not found</h1>"
 
 
-# ───────── API ─────────
 @router.post("/api/login")
 async def api_login(request: Request):
     body = await request.json()
@@ -46,14 +48,6 @@ async def api_me(request: Request):
     valid = await is_valid_session(token)
     return {"authenticated": valid}
 
-@router.get("/clients", response_class=HTMLResponse)
-async def clients_page(request: Request):
-    token = request.cookies.get(SESSION_COOKIE)
-    if not await is_valid_session(token):
-        return RedirectResponse(url="/login")
-    return HTMLResponse(content=_read_template("clients.html"))
-
-
 
 @router.post("/api/change-password")
 async def api_change_password(request: Request, _=Depends(require_auth)):
@@ -68,7 +62,6 @@ async def api_change_password(request: Request, _=Depends(require_auth)):
 
     AUTH["password_hash"] = hash_password(new)
 
-    # همه‌ی سشن‌های دیگر باطل می‌شوند، فقط سشن فعلی باقی می‌ماند
     current_token = request.cookies.get(SESSION_COOKIE)
     async with state.SESSIONS_LOCK:
         state.SESSIONS.clear()
@@ -78,28 +71,27 @@ async def api_change_password(request: Request, _=Depends(require_auth)):
     return {"ok": True}
 
 
-# ───────── Pages با محافظت ─────────
 @router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
     token = request.cookies.get(SESSION_COOKIE)
     if await is_valid_session(token):
         return RedirectResponse(url="/dashboard")
-    return HTMLResponse(content=_read_template("login.html"))
+    content = _read_template("login.html")
+    return HTMLResponse(content=content)
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    # بررسی احراز هویت قبل از نمایش صفحه
     token = request.cookies.get(SESSION_COOKIE)
     if not await is_valid_session(token):
         return RedirectResponse(url="/login")
     await ensure_default_link()
-    return HTMLResponse(content=_read_template("dashboard.html"))
+    content = _read_template("dashboard.html")
+    return HTMLResponse(content=content)
 
 
 @router.get("/")
 async def root_redirect(request: Request):
-    """ری‌دایرکت روت به دشبورد یا لاگین"""
     token = request.cookies.get(SESSION_COOKIE)
     if await is_valid_session(token):
         return RedirectResponse(url="/dashboard")
