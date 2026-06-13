@@ -7,7 +7,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+
 import state
+from routes import client_routes
 from config import CONFIG, SESSION_COOKIE
 from routes import auth_routes, links_routes, stats_routes
 from proxy import vless, http_proxy
@@ -71,6 +73,7 @@ app.include_router(auth_routes.router)
 app.include_router(links_routes.router)
 app.include_router(vless.router)
 app.include_router(http_proxy.router)
+app.include_router(client_routes.router)
 
 
 @app.on_event("startup")
