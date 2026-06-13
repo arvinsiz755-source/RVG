@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ورود · RVG Gateway</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --blue-50:#E6F1FB;--blue-100:#B5D4F4;--blue-200:#85B7EB;
+  --blue-300:#5BA3E8;--blue-400:#378ADD;--blue-500:#2570C2;
+  --blue-600:#185FA5;--blue-700:#11518F;--blue-800:#0C447C;--blue-900:#042C53;
+  --red-bg:#FCEBEB;--red-text:#A32D2D;
+  --border:#CFE3F7;--bg:#EEF5FE;--text-1:#042C53;
+}
+html,body{height:100%}
+body{
+  font-family:'Vazirmatn',sans-serif;
+  background:linear-gradient(135deg,var(--blue-900) 0%,#06335e 60%,var(--blue-700) 100%);
+  min-height:100vh;display:flex;align-items:center;justify-content:center;
+  padding:20px;color:var(--text-1);
+}
+.login-card{
+  background:#fff;border-radius:18px;padding:34px 30px;
+  width:100%;max-width:380px;box-shadow:0 16px 50px rgba(4,44,83,0.35);
+}
+.login-logo{display:flex;align-items:center;gap:12px;margin-bottom:22px}
+.login-logo img{width:46px;height:46px;border-radius:12px;object-fit:cover;border:1px solid var(--border)}
+.login-logo-name{font-size:16px;font-weight:700;color:var(--blue-900)}
+.login-logo-sub{font-size:11px;color:var(--blue-400);margin-top:2px}
+.login-title{font-size:18px;font-weight:700;margin-bottom:6px;color:var(--blue-900)}
+.login-sub{font-size:12.5px;color:var(--blue-400);margin-bottom:22px}
+.form-group{margin-bottom:16px;display:flex;flex-direction:column;gap:7px}
+.form-label{font-size:12px;font-weight:600;color:var(--blue-700)}
+.form-input{
+  padding:12px 14px;border-radius:10px;border:1px solid var(--border);
+  font-family:inherit;font-size:14px;outline:none;background:var(--bg);
+  transition:.15s;color:var(--text-1);
+}
+.form-input:focus{border-color:var(--blue-400);background:#fff}
+.btn-login{
+  width:100%;padding:13px;border-radius:10px;border:none;cursor:pointer;
+  background:var(--blue-600);color:#fff;font-family:inherit;font-size:14px;
+  font-weight:600;display:flex;align-items:center;justify-content:center;gap:8px;
+  transition:.15s;box-shadow:0 4px 14px rgba(24,95,165,0.3);
+}
+.btn-login:hover{background:var(--blue-700)}
+.btn-login:disabled{opacity:.6;cursor:not-allowed}
+.error-box{
+  background:var(--red-bg);color:var(--red-text);font-size:12.5px;
+  padding:10px 13px;border-radius:9px;margin-bottom:14px;display:none;
+  align-items:center;gap:8px;
+}
+.error-box.show{display:flex}
+.login-footer{margin-top:22px;text-align:center;font-size:11.5px;color:var(--blue-400)}
+.login-footer a{color:var(--blue-500);text-decoration:none;font-weight:600}
+</style>
+</head>
+<body>
+  <div class="login-card">
+    <div class="login-logo">
+      <img src="https://yt3.googleusercontent.com/vA6bYj1V386YmibpWRNFJtsRRqwfY_U9wnb7gmW90eRVXyNB7gAfjj1XPs5UX0cdKdQprrI=s160-c-k-c0x00ffffff-no-rj" alt="codebox">
+      <div>
+        <div class="login-logo-name">codebox</div>
+        <div class="login-logo-sub">RVG Gateway · v6.0</div>
+      </div>
+    </div>
+    <div class="login-title">ورود به پنل مدیریت</div>
+    <div class="login-sub">برای دسترسی به داشبورد، رمز عبور را وارد کنید</div>
+
+    <div class="error-box" id="err-box"><i class="ti ti-alert-circle"></i> <span id="err-text"></span></div>
+
+    <form id="login-form">
+      <div class="form-group">
+        <label class="form-label">رمز عبور</label>
+        <input class="form-input" type="password" id="password" placeholder="••••••••" autofocus required>
+      </div>
+      <a>رمز پیش فرض : 123456</a>
+      <button class="btn-login" type="submit" id="login-btn"><i class="ti ti-login-2"></i> ورود</button>
+    </form>
+
+    <div class="login-footer">
+      کانال تلگرام <a href="https://t.me/CodeBoxo" target="_blank" rel="noopener">@CodeBoxo</a>
+    </div>
+  </div>
+
+<script>
+const form=document.getElementById('login-form');
+const errBox=document.getElementById('err-box');
+const errText=document.getElementById('err-text');
+const btn=document.getElementById('login-btn');
+
+form.addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  errBox.classList.remove('show');
+  btn.disabled=true;
+  btn.innerHTML='<i class="ti ti-loader-2"></i> در حال ورود...';
+  const password=document.getElementById('password').value;
+  try{
+    const r=await fetch('/api/login',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({password})
+    });
+    if(!r.ok){
+      const d=await r.json().catch(()=>({}));
+      throw new Error(d.detail||'خطا در ورود');
+    }
+    location.href='/dashboard';
+  }catch(err){
+    errText.textContent=err.message;
+    errBox.classList.add('show');
+    btn.disabled=false;
+    btn.innerHTML='<i class="ti ti-login-2"></i> ورود';
+  }
+});
+</script>
+</body>
+</html>
