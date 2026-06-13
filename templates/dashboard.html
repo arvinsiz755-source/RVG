@@ -703,6 +703,7 @@ let trafficChart, donutChart, trafficChartBig;
 let prevTraffic = 0;
 let vlessLinkText = '';
 let ws;
+let authInterval;
 
 function toast(msg, isErr){
   const t=document.getElementById('toast');
@@ -720,14 +721,14 @@ function fmtBytes(b){
   return (b/(1024*1024*1024)).toFixed(2)+' GB';
 }
 
+/* ───────── Auth Guard ───────── */
 async function checkAuth(){
     try{
         const r = await fetch('/api/me', {
-            credentials: 'same-origin'  // اطمینان از ارسال کوکی
+            credentials: 'same-origin'
         });
         const d = await r.json();
         if(!d.authenticated){
-            // اگر سشن معتبر نبود، به صفحه لاگین برو
             console.log('Not authenticated, redirecting to login...');
             location.href = '/login';
             return false;
@@ -740,11 +741,27 @@ async function checkAuth(){
     }
 }
 
+function startAuthCheck(){
+    if(authInterval) clearInterval(authInterval);
+    authInterval = setInterval(async () => {
+        try{
+            const r = await fetch('/api/me', { credentials: 'same-origin' });
+            const d = await r.json();
+            if(!d.authenticated){
+                toast('نشست شما منقضی شده است، لطفاً مجدداً وارد شوید', true);
+                setTimeout(() => { location.href = '/login'; }, 1500);
+            }
+        }catch(e){
+            console.error('Periodic auth check error:', e);
+            location.href = '/login';
+        }
+    }, 2 * 60 * 1000);
+}
+
 async function logout(){
   try{ await fetch('/api/logout',{method:'POST'}); }catch(e){}
   location.href='/login';
 }
-document.getElementById('logout-btn').addEventListener('click', logout);
 
 /* ───────── Change Password ───────── */
 async function changePassword(){
@@ -806,6 +823,7 @@ function closeSidebar(){
 document.getElementById('open-sidebar-btn').addEventListener('click', openSidebar);
 document.getElementById('close-sidebar-btn').addEventListener('click', closeSidebar);
 overlay.addEventListener('click', closeSidebar);
+document.getElementById('logout-btn').addEventListener('click', logout);
 
 /* ───────── Navigation ───────── */
 function switchPage(name){
@@ -848,7 +866,6 @@ async function fetchStats(){
     document.getElementById('last-update').textContent=`آخرین بروزرسانی: ${new Date().toLocaleTimeString('fa-IR')}`;
     document.getElementById('conns-live-badge').innerHTML=`<span class="dot dot-green pulse"></span> ${d.active_connections} اتصال زنده`;
 
-    // traffic page
     document.getElementById('t-traffic').innerHTML=`${d.total_traffic_mb.toFixed(1)}<span class="metric-unit">MB</span>`;
 
     const delta=d.total_traffic_mb-prevTraffic;
@@ -881,22 +898,15 @@ async function fetchStats(){
 function renderErrors(errors){
   const el=document.getElementById('errors-list');
   const elFull=document.getElementById('errors-list-full');
-  if(errors.length){
-    const html5=errors.slice(-5).reverse().map(e=>`
-      <div class="err-row">
-        <div class="err-time"><i class="ti ti-clock" style="font-size:11px"></i> ${new Date(e.time).toLocaleString('fa-IR')}</div>
-        <div class="err-msg">${escapeHtml(e.error)}</div>
-      </div>`).join('');
+  if(errors && errors.length){
     const htmlAll=errors.slice().reverse().map(e=>`
       <div class="err-row">
         <div class="err-time"><i class="ti ti-clock" style="font-size:11px"></i> ${new Date(e.time).toLocaleString('fa-IR')}</div>
         <div class="err-msg">${escapeHtml(e.error)}${e.url?' — '+escapeHtml(e.url):''}</div>
       </div>`).join('');
-    if(el) el.innerHTML=html5;
     if(elFull) elFull.innerHTML=htmlAll;
   } else {
     const okHtml='<div style="color:var(--green-text);padding:12px 0;display:flex;align-items:center;gap:6px"><i class="ti ti-circle-check"></i> هیچ خطایی ثبت نشده</div>';
-    if(el) el.innerHTML=okHtml;
     if(elFull) elFull.innerHTML=okHtml;
   }
 }
@@ -936,21 +946,20 @@ async function loadLinks(){
               <div class="usage-bar"><div class="usage-bar-fill" style="width:${pct}%;background:${barColor}"></div></div>
               <div class="usage-text">${fmtBytes(l.used_bytes)} / ${limitTxt}</div>
             </div>
-          </td>
+           </td>
           <td>
             <button class="toggle ${l.active?'on':''}" onclick="toggleLink('${l.uuid}', ${!l.active})" title="فعال/غیرفعال"></button>
-          </td>
+           </td>
           <td style="white-space:nowrap">
             <button class="btn btn-sm btn-light-outline" onclick="copyVless('${l.vless_link.replace(/'/g,"\\'")}')"><i class="ti ti-copy"></i> کپی</button>
             <button class="btn btn-sm btn-light-outline" onclick="qrForText('${l.vless_link.replace(/'/g,"\\'")}')"><i class="ti ti-qrcode"></i></button>
             <button class="btn btn-sm btn-light-outline" onclick="resetUsage('${l.uuid}')"><i class="ti ti-rotate"></i></button>
             <button class="btn btn-sm btn-danger" onclick="deleteLink('${l.uuid}')"><i class="ti ti-trash"></i></button>
-          </td>
+           </td>
         </tr>`;
       }).join('');
     }
 
-    // overview summary
     const sumEl=document.getElementById('links-summary-list');
     if(!links.length){
       sumEl.innerHTML='هنوز لینکی ساخته نشده.';
@@ -1039,28 +1048,10 @@ async function loadConnections(){
     } else {
       empty.style.display='none';
       tbody.innerHTML=`<tr><td colspan="4" style="text-align:center;color:var(--blue-400);padding:20px">
-        ${d.active_connections} اتصال فعال در حال انتقال داده — برای جزئیات کامل هر اتصال، endpoint <code>/api/connections</code> را اضافه کنید.
-      </td></tr>`;
+        ${d.active_connections} اتصال فعال در حال انتقال داده
+       </td></tr>`;
     }
   }catch(e){ console.error(e); }
-}
-
-let authInterval;
-function startAuthCheck(){
-    if(authInterval) clearInterval(authInterval);
-    authInterval = setInterval(async () => {
-        try{
-            const r = await fetch('/api/me', { credentials: 'same-origin' });
-            const d = await r.json();
-            if(!d.authenticated){
-                toast('نشست شما منقضی شده است، لطفاً مجدداً وارد شوید', true);
-                setTimeout(() => { location.href = '/login'; }, 1500);
-            }
-        }catch(e){
-            console.error('Periodic auth check error:', e);
-            location.href = '/login';
-        }
-    }, 2 * 60 * 1000); // هر 2 دقیقه
 }
 
 async function loadErrorsFull(){
@@ -1179,48 +1170,12 @@ function initCharts(){
   });
 }
 
-/* ───────── Auth Guard ─────────
-   این تابع در هر بار باز شدن صفحه (DOMContentLoaded) اجرا می‌شود.
-   چون کوکی سشن به‌صورت session-only ست شده (بدون max_age)، با بسته‌شدن
-   کامل مرورگر کوکی پاک می‌شود و کاربر باید دوباره از /login وارد شود.
-   همچنین یک تایمر برای بررسی دوره‌ای اعتبار سشن در پس‌زمینه داریم. */
-async function checkAuth(){
-    try{
-        const r=await fetch('/api/me');
-        const d=await r.json();
-        if(!d.authenticated){
-            // اگر سشن معتبر نبود، به صفحه لاگین برو
-            location.href='/login';
-        }
-    }catch(e){
-        location.href='/login';
-    }
-}
-
-// بررسی دوره‌ای هر 5 دقیقه (برای اطمینان از معتبر بودن سشن)
-let authInterval;
-function startAuthCheck(){
-    if(authInterval) clearInterval(authInterval);
-    authInterval = setInterval(async () => {
-        try{
-            const r = await fetch('/api/me');
-            const d = await r.json();
-            if(!d.authenticated){
-                toast('نشست شما منقضی شده است، لطفاً مجدداً وارد شوید', true);
-                setTimeout(() => { location.href = '/login'; }, 1500);
-            }
-        }catch(e){
-            location.href = '/login';
-        }
-    }, 5 * 60 * 1000); // هر 5 دقیقه
-}
-
-// در DOMContentLoaded، علاوه بر checkAuth، تایمر را هم شروع کنید
+// ───────── صفحه اصلی ─────────
 document.addEventListener('DOMContentLoaded', async () => {
     const isAuth = await checkAuth();
-    if(!isAuth) return; // اگر احراز هویت نشد، ادامه نده
+    if(!isAuth) return;
     
-    startAuthCheck();  // شروع تایمر بررسی دوره‌ای
+    startAuthCheck();
     initCharts();
     document.getElementById('set-host').textContent = location.host;
     fetchStats();
