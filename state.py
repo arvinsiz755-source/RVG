@@ -2,37 +2,15 @@ import asyncio
 import time
 from collections import deque, defaultdict
 
-import httpx
-
 connections: dict = {}
-stats = {
-    "total_bytes": 0,
-    "total_requests": 0,
-    "total_errors": 0,
-    "start_time": time.time(),
-}
+stats = {"total_bytes": 0, "total_requests": 0, "total_errors": 0, "start_time": time.time()}
 error_logs: deque = deque(maxlen=50)
 hourly_traffic: dict = defaultdict(int)
-
-http_client: httpx.AsyncClient | None = None
-
-# ساختار لینک‌ها با اضافه شدن expiry_days
-LINKS = {
-    "uuid": {
-        "label": str,
-        "limit_bytes": int,
-        "used_bytes": int,
-        "created_at": str,
-        "active": bool,
-        "expiry_days": int,  # 0 = نامحدود
-    }
-}
+http_client = None
 LINKS: dict = {}
 LINKS_LOCK = asyncio.Lock()
-
 SESSIONS: dict = {}
 SESSIONS_LOCK = asyncio.Lock()
-
 
 def uptime() -> str:
     secs = int(time.time() - stats["start_time"])
