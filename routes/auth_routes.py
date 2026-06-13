@@ -46,6 +46,14 @@ async def api_me(request: Request):
     valid = await is_valid_session(token)
     return {"authenticated": valid}
 
+@router.get("/clients", response_class=HTMLResponse)
+async def clients_page(request: Request):
+    token = request.cookies.get(SESSION_COOKIE)
+    if not await is_valid_session(token):
+        return RedirectResponse(url="/login")
+    return HTMLResponse(content=_read_template("clients.html"))
+
+
 
 @router.post("/api/change-password")
 async def api_change_password(request: Request, _=Depends(require_auth)):
