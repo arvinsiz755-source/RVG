@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 
 import state
 from auth import require_auth
-from helpers import uptime, get_host
+from helpers import get_host
 
 router = APIRouter()
 
@@ -22,7 +22,7 @@ async def root():
 
 @router.get("/health")
 async def health():
-    return {"status": "ok", "connections": len(state.connections), "uptime": uptime()}
+    return {"status": "ok", "connections": len(state.connections), "uptime": state.uptime()}
 
 
 @router.get("/stats")
@@ -33,7 +33,7 @@ async def get_stats(_=Depends(require_auth)):
         "total_traffic_mb": round(state.stats["total_bytes"] / (1024 * 1024), 2),
         "total_requests": state.stats["total_requests"],
         "total_errors": state.stats["total_errors"],
-        "uptime": uptime(),
+        "uptime": state.uptime(),
         "timestamp": now.isoformat(),
         "hourly": dict(state.hourly_traffic),
         "recent_errors": list(state.error_logs)[-10:],
