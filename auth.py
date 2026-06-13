@@ -10,7 +10,6 @@ from state import SESSIONS, SESSIONS_LOCK
 router = APIRouter()
 
 
-# ───────── Session helpers ─────────
 async def create_session() -> str:
     token = secrets.token_urlsafe(32)
     async with SESSIONS_LOCK:
@@ -26,7 +25,6 @@ async def is_valid_session(token: str | None) -> bool:
         if exp is None:
             return False
         if exp < time.time():
-            # سشن منقضی شده، حذفش کن
             SESSIONS.pop(token, None)
             return False
         return True
@@ -47,27 +45,20 @@ async def require_auth(request: Request):
 
 
 def set_session_cookie(resp, token: str):
-    """
-    تنظیم کوکی به صورت Session Cookie (بدون max_age و expires)
-    با بسته شدن مرورگر، کوکی自動的に پاک می‌شود
-    """
     resp.set_cookie(
         key=SESSION_COOKIE,
         value=token,
-        httponly=True,      # جلوگیری از دسترسی جاوااسکریپت
-        samesite="lax",     # محافظت در برابر CSRF
+        httponly=True,
+        samesite="lax",
         path="/",
-        secure=True,        # فقط از طریق HTTPS ارسال شود (در Railway کار می‌کند)
-        # توجه: max_age و expires را SET نمی‌کنیم => Session Cookie
+        secure=True,
     )
 
 
 def clear_session_cookie(resp):
-    """پاک کردن کوکی سشن"""
     resp.delete_cookie(SESSION_COOKIE, path="/")
 
 
-# ───────── Endpoints ─────────
 @router.post("/api/login")
 async def api_login(request: Request):
     body = await request.json()
@@ -110,7 +101,6 @@ async def api_change_password(request: Request, _=Depends(require_auth)):
 
     AUTH["password_hash"] = hash_password(new)
 
-    # همه سشن‌های دیگر را باطل می‌کنیم، فقط سشن فعلی باقی می‌ماند
     current_token = request.cookies.get(SESSION_COOKIE)
     async with SESSIONS_LOCK:
         SESSIONS.clear()
