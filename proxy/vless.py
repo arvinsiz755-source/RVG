@@ -15,12 +15,12 @@ async def check_quota(uid: str, extra: int) -> bool:
         return _quota_cache[uid][0]
     async with state.LINKS_LOCK:
         link = state.LINKS.get(uid)
-        if not link or not link["active"]:
+        if not link or not link.get("active", True):
             res = False
-        elif link["limit_bytes"] == 0:
+        elif link.get("limit_bytes", 0) == 0:
             res = True
         else:
-            res = (link["used_bytes"] + extra) <= link["limit_bytes"]
+            res = (link.get("used_bytes", 0) + extra) <= link.get("limit_bytes", 0)
     _quota_cache[uid] = (res, now)
     return res
 
@@ -40,9 +40,7 @@ async def ws_tunnel(websocket: WebSocket, uuid: str):
         chunk = msg.get("bytes") or (msg.get("text", "").encode())
         if not chunk:
             return
-        # Parse header simplified
-        pos = 1
-        pos += 16
+        pos = 1 + 16
         addon = chunk[pos]
         pos += 1 + addon
         pos += 1
@@ -61,12 +59,9 @@ async def ws_tunnel(websocket: WebSocket, uuid: str):
         else:
             addr = "::1"
         payload = chunk[pos:]
-        size = len(chunk)
-        state.stats["total_bytes"] += size
-        state.stats["total_requests"] += 1
         async with state.LINKS_LOCK:
             if uuid in state.LINKS:
-                state.LINKS[uuid]["used_bytes"] += size
+                state.LINKS[uuid]["used_bytes"] = state.LINKS[uuid].get("used_bytes", 0) + len(chunk)
         reader, writer = await asyncio.open_connection(addr, port)
         if payload:
             writer.write(payload)
@@ -78,7 +73,6 @@ async def ws_tunnel(websocket: WebSocket, uuid: str):
                     if not await check_quota(uuid, len(data)):
                         await websocket.close(1008)
                         break
-                    state.stats["total_bytes"] += len(data)
                     writer.write(data)
                     await writer.drain()
             except:
@@ -93,7 +87,6 @@ async def ws_tunnel(websocket: WebSocket, uuid: str):
                     if not await check_quota(uuid, len(data)):
                         await websocket.close(1008)
                         break
-                    state.stats["total_bytes"] += len(data)
                     if first:
                         await websocket.send_bytes(b"\x00\x00" + data)
                         first = False
