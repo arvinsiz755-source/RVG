@@ -720,20 +720,23 @@ function fmtBytes(b){
   return (b/(1024*1024*1024)).toFixed(2)+' GB';
 }
 
-/* ───────── Auth Guard ─────────
-   این تابع در هر بار باز شدن صفحه (DOMContentLoaded) اجرا می‌شود.
-   چون کوکی سشن به‌صورت session-only ست شده (بدون max_age)، با بسته‌شدن
-   کامل مرورگر کوکی پاک می‌شود و کاربر باید دوباره از /login وارد شود. */
 async function checkAuth(){
     try{
-        const r=await fetch('/api/me');
-        const d=await r.json();
+        const r = await fetch('/api/me', {
+            credentials: 'same-origin'  // اطمینان از ارسال کوکی
+        });
+        const d = await r.json();
         if(!d.authenticated){
             // اگر سشن معتبر نبود، به صفحه لاگین برو
-            location.href='/login';
+            console.log('Not authenticated, redirecting to login...');
+            location.href = '/login';
+            return false;
         }
+        return true;
     }catch(e){
-        location.href='/login';
+        console.error('Auth check error:', e);
+        location.href = '/login';
+        return false;
     }
 }
 
@@ -1047,16 +1050,17 @@ function startAuthCheck(){
     if(authInterval) clearInterval(authInterval);
     authInterval = setInterval(async () => {
         try{
-            const r = await fetch('/api/me');
+            const r = await fetch('/api/me', { credentials: 'same-origin' });
             const d = await r.json();
             if(!d.authenticated){
                 toast('نشست شما منقضی شده است، لطفاً مجدداً وارد شوید', true);
                 setTimeout(() => { location.href = '/login'; }, 1500);
             }
         }catch(e){
+            console.error('Periodic auth check error:', e);
             location.href = '/login';
         }
-    }, 5 * 60 * 1000); // هر 5 دقیقه
+    }, 2 * 60 * 1000); // هر 2 دقیقه
 }
 
 async function loadErrorsFull(){
@@ -1212,16 +1216,20 @@ function startAuthCheck(){
 }
 
 // در DOMContentLoaded، علاوه بر checkAuth، تایمر را هم شروع کنید
-document.addEventListener('DOMContentLoaded',async ()=>{
-    await checkAuth();
+document.addEventListener('DOMContentLoaded', async () => {
+    const isAuth = await checkAuth();
+    if(!isAuth) return; // اگر احراز هویت نشد، ادامه نده
+    
     startAuthCheck();  // شروع تایمر بررسی دوره‌ای
     initCharts();
-    document.getElementById('set-host').textContent=location.host;
+    document.getElementById('set-host').textContent = location.host;
     fetchStats();
     fetchOverviewVless();
     loadLinks();
-    setInterval(fetchStats,4000);
-    setInterval(()=>{ if(document.getElementById('page-links').classList.contains('active')) loadLinks(); }, 5000);
+    setInterval(fetchStats, 4000);
+    setInterval(() => { 
+        if(document.getElementById('page-links').classList.contains('active')) loadLinks(); 
+    }, 5000);
 });
 </script>
 </body>
