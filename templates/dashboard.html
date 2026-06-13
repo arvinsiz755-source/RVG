@@ -241,7 +241,6 @@ a{color:inherit}
     <div class="nav-group-label">پنل</div>
     <div class="nav-item active" data-page="overview"><i class="ti ti-layout-dashboard"></i> داشبورد کلی</div>
     <div class="nav-item" data-page="links"><i class="ti ti-link-plus"></i> مدیریت لینک‌ها <span class="nav-badge" id="links-count-badge">0</span></div>
-    <div class="nav-item" data-page="clients"><i class="ti ti-users"></i> مدیریت کاربران <span class="nav-badge" id="clients-count-badge">0</span></div>
     <div class="nav-item" data-page="traffic"><i class="ti ti-chart-area"></i> آمار ترافیک</div>
     <div class="nav-item" data-page="connections"><i class="ti ti-plug-connected"></i> اتصالات فعال <span class="nav-badge" id="conns-count-badge">0</span></div>
 
@@ -380,6 +379,11 @@ a{color:inherit}
           <label class="form-label">مقدار سهمیه ترافیک</label>
           <input class="form-input" id="new-link-value" type="number" min="0" step="0.1" placeholder="0 = بی‌نهایت" style="width:130px">
         </div>
+        <!-- در بخش مدیریت لینک‌ها، فیلد تاریخ انقضا را اضافه کنید -->
+      <div class="form-group">
+        <label class="form-label">روز اعتبار (0 = نامحدود)</label>
+        <input class="form-input" id="new-link-expiry" type="number" min="0" value="0" style="width:100px">
+      </div>
         <div class="form-group">
           <label class="form-label">واحد</label>
           <select class="form-select" id="new-link-unit">
@@ -549,8 +553,25 @@ function renderErrors(errors){ const elFull=document.getElementById('errors-list
 
 async function loadLinks(){ try{ const r=await authFetch('/api/links'); const d=await r.json(); const tbody=document.getElementById('links-tbody'); const empty=document.getElementById('links-empty'); const links=d.links||[]; document.getElementById('links-count-badge').textContent=links.length; document.getElementById('links-page-count').textContent=`${toFa(links.length)} لینک`; document.getElementById('links-summary-badge').textContent=`${toFa(links.length)} لینک`; if(!links.length){ tbody.innerHTML=''; empty.style.display='block'; }else{ empty.style.display='none'; tbody.innerHTML=links.map(l=>{ const limitTxt=l.limit_bytes===0?'بی‌نهایت':fmtBytes(l.limit_bytes); const pct=l.limit_bytes===0?0:Math.min(100,(l.used_bytes/l.limit_bytes)*100); const barColor=pct>90?'var(--red-dot)':pct>70?'var(--amber-dot)':'var(--blue-400)'; return `<tr><td><b>${escapeHtml(l.label)}</b><div style="font-size:10px;color:var(--blue-400)">${new Date(l.created_at).toLocaleString('fa-IR')}</div></td><td><span class="link-uuid">${l.uuid}</span></td><td><div class="usage-bar-wrap"><div class="usage-bar"><div class="usage-bar-fill" style="width:${pct}%;background:${barColor}"></div></div><div class="usage-text">${fmtBytes(l.used_bytes)} / ${limitTxt}</div></div></td><td><button class="toggle ${l.active?'on':''}" onclick="toggleLink('${l.uuid}', ${!l.active})"></button></td><td><button class="btn btn-sm btn-light-outline" onclick="copyVless('${l.vless_link.replace(/'/g,"\\'")}')"><i class="ti ti-copy"></i></button><button class="btn btn-sm btn-light-outline" onclick="qrForText('${l.vless_link.replace(/'/g,"\\'")}')"><i class="ti ti-qrcode"></i></button><button class="btn btn-sm btn-light-outline" onclick="resetUsage('${l.uuid}')"><i class="ti ti-rotate"></i></button><button class="btn btn-sm btn-danger" onclick="deleteLink('${l.uuid}')"><i class="ti ti-trash"></i></button></td></tr>`; }).join(''); } const sumEl=document.getElementById('links-summary-list'); if(!links.length){ sumEl.innerHTML='هنوز لینکی ساخته نشده.'; }else{ sumEl.innerHTML=links.slice(0,5).map(l=>{ const limitTxt=l.limit_bytes===0?'بی‌نهایت':fmtBytes(l.limit_bytes); return `<div class="status-row"><span class="status-key"><i class="ti ${l.active?'ti-circle-check':'ti-circle-x'}" style="color:${l.active?'var(--green-dot)':'var(--red-dot)'}"></i> ${escapeHtml(l.label)}</span><span class="status-val">${fmtBytes(l.used_bytes)} / ${limitTxt}</span></div>`; }).join(''); } }catch(e){ console.error(e); } }
 
-async function createLink(){ const label=document.getElementById('new-link-label').value.trim()||'لینک جدید'; const value=document.getElementById('new-link-value').value; const unit=document.getElementById('new-link-unit').value; try{ const r=await authFetch('/api/links',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label,limit_value:value||0,limit_unit:unit})}); if(!r.ok) throw new Error('failed'); document.getElementById('new-link-label').value=''; document.getElementById('new-link-value').value=''; toast('✓ لینک جدید ساخته شد'); loadLinks(); }catch(e){ toast('✗ خطا',true); } }
-
+async function createLink(){
+  const label=document.getElementById('new-link-label').value.trim() || 'لینک جدید';
+  const value=document.getElementById('new-link-value').value;
+  const unit=document.getElementById('new-link-unit').value;
+  const expiryDays=document.getElementById('new-link-expiry')?.value || 0;
+  try{
+    const r=await authFetch('/api/links',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({label, limit_value:value||0, limit_unit:unit, expiry_days:parseInt(expiryDays)})
+    });
+    if(!r.ok) throw new Error('failed');
+    document.getElementById('new-link-label').value='';
+    document.getElementById('new-link-value').value='';
+    if(document.getElementById('new-link-expiry')) document.getElementById('new-link-expiry').value='0';
+    toast('✓ لینک جدید ساخته شد');
+    loadLinks();
+  }catch(e){ toast('✗ خطا در ساخت لینک', true); }
+}
 async function toggleLink(uuid, newState){ try{ await authFetch(`/api/links/${uuid}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({active:newState})}); toast(newState?'✓ لینک فعال شد':'✓ لینک غیرفعال شد'); loadLinks(); }catch(e){ toast('✗ خطا',true); } }
 
 async function resetUsage(uuid){ try{ await authFetch(`/api/links/${uuid}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({reset_usage:true})}); toast('✓ مصرف ریست شد'); loadLinks(); }catch(e){ toast('✗ خطا',true); } }
