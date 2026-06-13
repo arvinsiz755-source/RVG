@@ -2,11 +2,14 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
+# تنظیم پیش‌فرض متغیرهای محیطی - اینها خودکار اعمال می‌شوند
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONOPTIMIZE=2 \
     UVICORN_WORKERS=2 \
-    UVICORN_LIMIT_CONCURRENCY=2000
+    UVICORN_LIMIT_CONCURRENCY=2000 \
+    UVICORN_BACKLOG=4096 \
+    UVICORN_LOG_LEVEL=warning
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
@@ -19,13 +22,18 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 COPY . .
 
-# تنظیمات سیستم برای سرعت بالا
-RUN echo "net.core.rmem_max = 134217728" >> /etc/sysctl.conf && \
-    echo "net.core.wmem_max = 134217728" >> /etc/sysctl.conf
+# کپی و تنظیم entrypoint
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# ایجاد کاربر غیر روت
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+USER appuser
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 EXPOSE 8000
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--loop", "uvloop", "--limit-concurrency", "2000"]
+# استفاده از entrypoint
+ENTRYPOINT ["/entrypoint.sh"]
