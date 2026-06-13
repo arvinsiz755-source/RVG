@@ -1,95 +1,32 @@
 from datetime import datetime
-
 from fastapi import APIRouter, Request, HTTPException, Depends
-
 import state
 from auth import require_auth
-from helpers import generate_uuid, generate_vless_link, get_host, parse_size_to_bytes, is_expired, get_remaining_days
+from helpers import generate_uuid, generate_vless_link, get_host, parse_size_to_bytes
 
 router = APIRouter()
-
 
 @router.post("/api/links")
 async def create_link(request: Request, _=Depends(require_auth)):
     body = await request.json()
-    label = (body.get("label") or "لینک جدید").strip()[:60]
-    limit_value = float(body.get("limit_value") or 0)
-    limit_unit = body.get("limit_unit") or "GB"
-    expiry_days = int(body.get("expiry_days") or 0)  # اضافه شدن تاریخ انقضا
-
-    limit_bytes = 0 if limit_value <= 0 else parse_size_to_bytes(limit_value, limit_unit)
-
     uid = generate_uuid()
     async with state.LINKS_LOCK:
         state.LINKS[uid] = {
-            "label": label,
-            "limit_bytes": limit_bytes,
+            "label": body.get("label", "New Link")[:60],
+            "limit_bytes": parse_size_to_bytes(float(body.get("limit_value", 0)), body.get("limit_unit", "GB")),
             "used_bytes": 0,
             "created_at": datetime.now().isoformat(),
             "active": True,
-            "expiry_days": expiry_days,  # فیلد جدید
         }
-
-    host = get_host()
-    return {
-        "uuid": uid,
-        "label": label,
-        "limit_bytes": limit_bytes,
-        "used_bytes": 0,
-        "active": True,
-        "created_at": state.LINKS[uid]["created_at"],
-        "expiry_days": expiry_days,
-        "remaining_days": expiry_days if expiry_days > 0 else 0,
-        "vless_link": generate_vless_link(uid, host, remark=f"RVG-{label}", expiry_days=expiry_days),
-    }
-
+    return {"uuid": uid, "vless_link": generate_vless_link(uid, get_host())}
 
 @router.get("/api/links")
 async def list_links(_=Depends(require_auth)):
-    host = get_host()
     result = []
     async with state.LINKS_LOCK:
         for uid, data in state.LINKS.items():
-            # محاسبه روزهای باقی مانده
-            remaining_days = get_remaining_days(data["created_at"], data.get("expiry_days", 0))
-            is_expired_link = is_expired(data["created_at"], data.get("expiry_days", 0))
-            
-            result.append({
-                "uuid": uid,
-                "label": data["label"],
-                "limit_bytes": data["limit_bytes"],
-                "used_bytes": data["used_bytes"],
-                "active": data["active"] and not is_expired_link,  # اگر منقضی شده غیرفعال کن
-                "created_at": data["created_at"],
-                "expiry_days": data.get("expiry_days", 0),
-                "remaining_days": remaining_days,
-                "is_expired": is_expired_link,
-                "vless_link": generate_vless_link(uid, host, remark=f"RVG-{data['label']}", expiry_days=data.get("expiry_days", 0)),
-            })
-    result.sort(key=lambda x: x["created_at"], reverse=True)
-    return {"links": result}
-
-
-@router.patch("/api/links/{uid}")
-async def toggle_link(uid: str, request: Request, _=Depends(require_auth)):
-    body = await request.json()
-    async with state.LINKS_LOCK:
-        if uid not in state.LINKS:
-            raise HTTPException(status_code=404, detail="link not found")
-        if "active" in body:
-            state.LINKS[uid]["active"] = bool(body["active"])
-        if "limit_value" in body:
-            limit_value = float(body.get("limit_value") or 0)
-            limit_unit = body.get("limit_unit") or "GB"
-            state.LINKS[uid]["limit_bytes"] = 0 if limit_value <= 0 else parse_size_to_bytes(limit_value, limit_unit)
-        if "reset_usage" in body and body["reset_usage"]:
-            state.LINKS[uid]["used_bytes"] = 0
-        if "label" in body:
-            state.LINKS[uid]["label"] = str(body["label"])[:60]
-        if "expiry_days" in body:
-            state.LINKS[uid]["expiry_days"] = int(body["expiry_days"])
-    return {"ok": True}
-
+            result.append({"uuid": uid, "label": data["label"], "limit_bytes": data["limit_bytes"], "used_bytes": data["used_bytes"], "active": data["active"], "created_at": data["created_at"], "vless_link": generate_vless_link(uid, get_host())})
+    return {"links": sorted(result, key=lambda x: x["created_at"], reverse=True)}
 
 @router.delete("/api/links/{uid}")
 async def delete_link(uid: str, _=Depends(require_auth)):
