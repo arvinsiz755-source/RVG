@@ -10,8 +10,7 @@ def generate_vless_link(uuid_str: str, host: str, remark: str = "RVG") -> str:
     return f"vless://{uuid_str}@{host}:443?encryption=none&security=tls&sni={host}&fp=chrome&type=ws&path=/ws/{uuid_str}#{remark}"
 
 def get_host() -> str:
-    from config import get_host as _get_host
-    return _get_host()
+    return "localhost"
 
 def parse_size_to_bytes(value: float, unit: str) -> int:
     unit = unit.upper()
