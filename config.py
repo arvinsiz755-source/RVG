@@ -8,10 +8,7 @@ CONFIG = {
     "host": os.environ.get("RAILWAY_PUBLIC_DOMAIN", "localhost"),
 }
 
-# ───────── Auth config ─────────
 SESSION_COOKIE = "rvg_session"
-# مدت اعتبار سشن روی سرور (12 ساعت - حتی اگر مرورگر بسته نشود)
-# بعد از 12 ساعت استفاده نکردن، کاربر باید دوباره لاگین کند
 SESSION_TTL = 60 * 60 * 12  # 12 ساعت
 
 
