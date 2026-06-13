@@ -10,7 +10,7 @@ router = APIRouter()
 
 
 @router.get("/")
-async def root():
+async def root(_=Depends(require_auth)):
     return {
         "service": "RVG Gateway – codebox",
         "version": "6.0",
@@ -22,6 +22,7 @@ async def root():
 
 @router.get("/health")
 async def health():
+    # health بدون احراز هویت برای مانیتورینگ
     return {"status": "ok", "connections": len(state.connections), "uptime": state.uptime()}
 
 
