@@ -1,3 +1,4 @@
+# proxy/vless.py - بهینه‌سازی شده
 import asyncio
 import secrets
 from datetime import datetime
@@ -8,7 +9,40 @@ import state
 
 router = APIRouter()
 
-RELAY_BUF = 64 * 1024
+# افزایش بافر برای سرعت بیشتر
+RELAY_BUF = 128 * 1024  # 128KB به جای 64KB
+
+# کش برای بررسی سهمیه
+_quota_cache = {}
+_quota_cache_lock = asyncio.Lock()
+
+
+async def check_quota_cached(uid: str, extra_bytes: int) -> bool:
+    """نسخه کش شده بررسی سهمیه"""
+    cache_key = f"quota_{uid}"
+    
+    async with _quota_cache_lock:
+        if cache_key in _quota_cache:
+            cached_result, cached_time = _quota_cache[cache_key]
+            # کش به مدت 0.5 ثانیه معتبر است
+            if datetime.now().timestamp() - cached_time < 0.5:
+                return cached_result
+    
+    async with state.LINKS_LOCK:
+        link = state.LINKS.get(uid)
+        if link is None:
+            result = False
+        elif not link["active"]:
+            result = False
+        elif link["limit_bytes"] == 0:
+            result = True
+        else:
+            result = (link["used_bytes"] + extra_bytes) <= link["limit_bytes"]
+    
+    async with _quota_cache_lock:
+        _quota_cache[cache_key] = (result, datetime.now().timestamp())
+    
+    return result
 
 
 async def ensure_default_link():
@@ -28,60 +62,37 @@ async def ensure_default_link():
 
 async def parse_vless_header(first_chunk: bytes):
     if len(first_chunk) < 24:
-        raise ValueError("chunk too small for VLESS header")
-
+        raise ValueError("chunk too small")
+    # بهینه‌سازی: حذف متغیرهای اضافی
     pos = 0
-    version = first_chunk[pos]; pos += 1          # noqa: E702,F841
-    req_uuid = first_chunk[pos:pos + 16]; pos += 16  # noqa: E702
-
-    addon_len = first_chunk[pos]; pos += 1
-    pos += addon_len
-
-    command = first_chunk[pos]; pos += 1  # noqa: E702
-    port = int.from_bytes(first_chunk[pos:pos + 2], "big"); pos += 2
-
-    addr_type = first_chunk[pos]; pos += 1
+    pos += 1  # version
+    req_uuid = first_chunk[pos:pos + 16]
+    pos += 16
+    addon_len = first_chunk[pos]
+    pos += 1 + addon_len
+    pos += 1  # command
+    port = int.from_bytes(first_chunk[pos:pos + 2], "big")
+    pos += 2
+    addr_type = first_chunk[pos]
+    pos += 1
 
     if addr_type == 1:
-        addr_bytes = first_chunk[pos:pos + 4]; pos += 4
-        address = ".".join(str(b) for b in addr_bytes)
+        address = ".".join(str(b) for b in first_chunk[pos:pos + 4])
+        pos += 4
     elif addr_type == 2:
-        domain_len = first_chunk[pos]; pos += 1
+        domain_len = first_chunk[pos]
+        pos += 1
         address = first_chunk[pos:pos + domain_len].decode("utf-8", errors="ignore")
         pos += domain_len
     elif addr_type == 3:
-        addr_bytes = first_chunk[pos:pos + 16]; pos += 16
+        addr_bytes = first_chunk[pos:pos + 16]
+        pos += 16
         address = ":".join(f"{addr_bytes[i]:02x}{addr_bytes[i+1]:02x}" for i in range(0, 16, 2))
     else:
         raise ValueError(f"unknown address type: {addr_type}")
 
     payload = first_chunk[pos:]
-    return req_uuid, command, address, port, payload
-
-
-# ─────────────────────────────────────────────────────────────
-#  فیکس اصلی مشکل ۱:
-#  قبلاً وقتی لینکی حذف می‌شد (uid in LINKS نبود) تابع True
-#  برمی‌گرداند (یعنی "اجازه عبور بده") که باعث می‌شد حذف لینک
-#  هیچ اثری نداشته باشه. الان اگر لینک پیدا نشه → رد می‌کنیم.
-# ─────────────────────────────────────────────────────────────
-async def check_quota(uid: str, extra_bytes: int) -> bool:
-    """True اگر اجازه عبور دارد (سهمیه تمام نشده و لینک فعال است)."""
-    async with state.LINKS_LOCK:
-        link = state.LINKS.get(uid)
-        if link is None:
-            return False  # لینک حذف شده یا اصلاً وجود نداره → رد
-        if not link["active"]:
-            return False
-        if link["limit_bytes"] == 0:
-            return True
-        return (link["used_bytes"] + extra_bytes) <= link["limit_bytes"]
-
-
-async def add_usage(uid: str, n: int):
-    async with state.LINKS_LOCK:
-        if uid in state.LINKS:
-            state.LINKS[uid]["used_bytes"] += n
+    return req_uuid, address, port, payload
 
 
 async def ws_to_tcp(websocket: WebSocket, writer: asyncio.StreamWriter, conn_id: str, link_uid: str):
@@ -97,15 +108,19 @@ async def ws_to_tcp(websocket: WebSocket, writer: asyncio.StreamWriter, conn_id:
                 continue
 
             size = len(data)
-            if not await check_quota(link_uid, size):
-                await websocket.close(code=1008, reason="quota exceeded or link disabled")
+            if not await check_quota_cached(link_uid, size):
+                await websocket.close(code=1008, reason="quota exceeded")
                 break
 
             state.stats["total_bytes"] += size
             state.stats["total_requests"] += 1
-            state.connections[conn_id]["bytes"] += size
+            if conn_id in state.connections:
+                state.connections[conn_id]["bytes"] += size
             state.hourly_traffic[datetime.now().strftime("%H:00")] += size
-            await add_usage(link_uid, size)
+            
+            async with state.LINKS_LOCK:
+                if link_uid in state.LINKS:
+                    state.LINKS[link_uid]["used_bytes"] += size
 
             writer.write(data)
             await writer.drain()
@@ -127,14 +142,18 @@ async def tcp_to_ws(websocket: WebSocket, reader: asyncio.StreamReader, conn_id:
                 break
 
             size = len(data)
-            if not await check_quota(link_uid, size):
-                await websocket.close(code=1008, reason="quota exceeded or link disabled")
+            if not await check_quota_cached(link_uid, size):
+                await websocket.close(code=1008, reason="quota exceeded")
                 break
 
             state.stats["total_bytes"] += size
-            state.connections[conn_id]["bytes"] += size
+            if conn_id in state.connections:
+                state.connections[conn_id]["bytes"] += size
             state.hourly_traffic[datetime.now().strftime("%H:00")] += size
-            await add_usage(link_uid, size)
+            
+            async with state.LINKS_LOCK:
+                if link_uid in state.LINKS:
+                    state.LINKS[link_uid]["used_bytes"] += size
 
             if first:
                 await websocket.send_bytes(b"\x00\x00" + data)
@@ -158,10 +177,8 @@ async def websocket_tunnel(websocket: WebSocket, uuid: str):
 
     writer = None
     try:
-        # بررسی سهمیه/وضعیت پیش از شروع — اینجا هم اگر لینک
-        # حذف یا غیرفعال شده باشه، اتصال بسته میشه.
-        if not await check_quota(uuid, 0):
-            await websocket.close(code=1008, reason="quota exceeded or link disabled")
+        if not await check_quota_cached(uuid, 0):
+            await websocket.close(code=1008, reason="quota exceeded")
             return
 
         first_msg = await asyncio.wait_for(websocket.receive(), timeout=15.0)
@@ -174,14 +191,18 @@ async def websocket_tunnel(websocket: WebSocket, uuid: str):
         if not first_chunk:
             return
 
-        req_uuid_raw, command, address, port, initial_payload = await parse_vless_header(first_chunk)
+        req_uuid_raw, address, port, initial_payload = await parse_vless_header(first_chunk)
 
         size = len(first_chunk)
         state.stats["total_bytes"] += size
         state.stats["total_requests"] += 1
-        state.connections[conn_id]["bytes"] += size
+        if conn_id in state.connections:
+            state.connections[conn_id]["bytes"] += size
         state.hourly_traffic[datetime.now().strftime("%H:00")] += size
-        await add_usage(uuid, size)
+        
+        async with state.LINKS_LOCK:
+            if uuid in state.LINKS:
+                state.LINKS[uuid]["used_bytes"] += size
 
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(address, port), timeout=10.0
