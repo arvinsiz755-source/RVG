@@ -18,9 +18,10 @@ async def is_valid_session(token: str | None) -> bool:
         return False
     async with SESSIONS_LOCK:
         exp = SESSIONS.get(token)
-        if exp is None or exp < time.time():
-            if exp:
-                SESSIONS.pop(token, None)
+        if exp is None:
+            return False
+        if exp < time.time():
+            SESSIONS.pop(token, None)
             return False
         return True
 
@@ -36,12 +37,13 @@ async def require_auth(request: Request):
     return token
 
 def set_session_cookie(resp, token: str):
-    resp.set_cookie(key=SESSION_COOKIE, value=token, httponly=True, samesite="lax", path="/", secure=True)
+    resp.set_cookie(key=SESSION_COOKIE, value=token, httponly=True, samesite="lax", path="/", secure=False)
 
 @router.post("/api/login")
 async def api_login(request: Request):
     body = await request.json()
-    if hash_password(str(body.get("password", ""))) != AUTH["password_hash"]:
+    password = str(body.get("password", ""))
+    if hash_password(password) != AUTH["password_hash"]:
         raise HTTPException(status_code=401, detail="رمز عبور اشتباه است")
     token = await create_session()
     resp = JSONResponse({"ok": True})
@@ -50,11 +52,14 @@ async def api_login(request: Request):
 
 @router.post("/api/logout")
 async def api_logout(request: Request):
-    await destroy_session(request.cookies.get(SESSION_COOKIE))
+    token = request.cookies.get(SESSION_COOKIE)
+    await destroy_session(token)
     resp = JSONResponse({"ok": True})
     resp.delete_cookie(SESSION_COOKIE, path="/")
     return resp
 
 @router.get("/api/me")
 async def api_me(request: Request):
-    return {"authenticated": await is_valid_session(request.cookies.get(SESSION_COOKIE))}
+    token = request.cookies.get(SESSION_COOKIE)
+    valid = await is_valid_session(token)
+    return {"authenticated": valid}
